@@ -1,0 +1,7 @@
+build/
+install/
+log/
+/odin_static_*.txt
+/allan_*.png
+src/odin_ros_driver/recorddata/
+.vscode/browse.vc.db*

@@ -1,0 +1,26 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${workspaceFolder}/.vscode/browse.vc.db",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/alienware/livo_workspace/install/vikit_common/include/**",
+        "/home/alienware/livo_workspace/install/odin_ros_driver/include/**",
+        "/home/alienware/livo_workspace/install/livox_ros_driver2/include/**",
+        "/opt/ros/humble/include/**",
+        "/home/alienware/livo_workspace/src/FAST-LIVO2/include/**",
+        "/home/alienware/livo_workspace/src/odin_ros_driver/include/**",
+        "/home/alienware/livo_workspace/src/vikit_common/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ros2",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++17"
+    }
+  ],
+  "version": 4
+}
