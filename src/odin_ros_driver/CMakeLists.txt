@@ -346,26 +346,25 @@ elseif(ROS_VERSION STREQUAL "ROS2")
         message_filters
     )
 
-    add_executable(image_overlay_node src/image_overlay_node.cpp)
-    target_compile_definitions(image_overlay_node PRIVATE ROS2)
-    target_link_libraries(image_overlay_node
-        ${OpenCV_LIBS}
-    )
-    ament_target_dependencies(image_overlay_node
-        rclcpp
-        sensor_msgs
-        cv_bridge
-        image_transport
-        message_filters
-    )
+#    add_executable(image_overlay_node src/image_overlay_node.cpp)
+#    target_compile_definitions(image_overlay_node PRIVATE ROS2)
+#    target_link_libraries(image_overlay_node
+#        ${OpenCV_LIBS}
+#    )
+#    ament_target_dependencies(image_overlay_node
+#        rclcpp
+#        sensor_msgs
+#        cv_bridge
+#        image_transport
+#        message_filters
+#    )
 
     # Installation rules - ensure all install targets are defined before ament_package()
     # Install executable
-    install(TARGETS 
-        host_sdk_sample 
+    install(TARGETS
+        host_sdk_sample
         pcd2depth_ros2_node
         cloud_reprojection_ros2_node
-        image_overlay_node
         EXPORT export_${PROJECT_NAME}
         ARCHIVE DESTINATION lib
         LIBRARY DESTINATION lib
