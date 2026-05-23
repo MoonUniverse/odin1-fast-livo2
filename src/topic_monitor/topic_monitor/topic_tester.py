@@ -24,8 +24,13 @@ MSG_TYPE_MAP = {
 
 
 def import_msg(typename: str):
-    parts = typename.split("/")
-    pkg, name = parts[0], parts[2]
+    # Handle both "sensor_msgs/msg/Imu" and "sensor_msgs.msg.Imu"
+    if "/" in typename:
+        parts = typename.split("/")
+        pkg, name = parts[0], parts[-1]
+    else:
+        parts = typename.split(".")
+        pkg, name = parts[0], parts[-1]
     mod = __import__(f"{pkg}.msg", fromlist=[name])
     return getattr(mod, name)
 
