@@ -103,6 +103,38 @@ static std::mutex g_imu_queue_mutex;
 static std::condition_variable g_imu_queue_cv;
 static const size_t IMU_QUEUE_MAX_SIZE = 200;
 
+// Cloud (DTOF) dedicated processing thread — avoids blocking lidar_data_callback
+struct cloud_frame_t {
+    std::vector<uint8_t> xyz_data;
+    std::vector<uint8_t> intensity_data;
+    std::vector<uint8_t> confidence_data;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint64_t timestamp = 0;
+    uint32_t image_count = 0;
+};
+static std::atomic<bool> g_cloud_thread_running(false);
+static std::thread g_cloud_thread;
+static std::queue<cloud_frame_t> g_cloud_queue;
+static std::mutex g_cloud_queue_mutex;
+static std::condition_variable g_cloud_queue_cv;
+static const size_t CLOUD_QUEUE_MAX_SIZE = 20;
+
+// Image (RGB) dedicated processing thread — avoids blocking lidar_data_callback
+struct image_frame_t {
+    std::vector<uint8_t> jpeg_data;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint64_t timestamp = 0;
+    uint32_t length = 0;
+};
+static std::atomic<bool> g_image_thread_running(false);
+static std::thread g_image_thread;
+static std::queue<image_frame_t> g_image_queue;
+static std::mutex g_image_queue_mutex;
+static std::condition_variable g_image_queue_cv;
+static const size_t IMAGE_QUEUE_MAX_SIZE = 15;
+
 double get_ptp_smoothed_delay() {
     return g_ptp_delay_smooth.load(std::memory_order_relaxed);
 }
@@ -291,6 +323,8 @@ void collect_children(pid_t pid, std::vector<pid_t>& all) {
 
 void clear_all_queues();
 static void stop_imu_thread();
+static void stop_cloud_thread();
+static void stop_image_thread();
 
 static bool convert_calib_to_cam_in_ex(const std::string& calib_path, const std::filesystem::path& out_path);
 
@@ -721,12 +755,26 @@ void clear_all_queues() {
     g_latest_bgr.reset();
     g_latest_rgb_timestamp = 0;
     g_has_rgb = false;
-    
+
     // Clear IMU queue
     {
         std::lock_guard<std::mutex> lock(g_imu_queue_mutex);
         while (!g_imu_queue.empty()) {
             g_imu_queue.pop();
+        }
+    }
+    // Clear cloud queue
+    {
+        std::lock_guard<std::mutex> lock(g_cloud_queue_mutex);
+        while (!g_cloud_queue.empty()) {
+            g_cloud_queue.pop();
+        }
+    }
+    // Clear image queue
+    {
+        std::lock_guard<std::mutex> lock(g_image_queue_mutex);
+        while (!g_image_queue.empty()) {
+            g_image_queue.pop();
         }
     }
 }
@@ -826,6 +874,225 @@ static void stop_imu_thread()
     }
 }
 
+// Cloud (DTOF) dedicated processing thread routine
+static void cloud_thread_routine()
+{
+    pthread_t this_thread = pthread_self();
+    struct sched_param param;
+    param.sched_priority = 60;
+
+    int ret = pthread_setschedparam(this_thread, SCHED_FIFO, &param);
+    if (ret != 0) {
+        ret = pthread_setschedparam(this_thread, SCHED_RR, &param);
+    }
+
+#ifdef ROS2
+    RCLCPP_INFO(rclcpp::get_logger("cloud_thread"), "Cloud thread started (priority: %d)", param.sched_priority);
+#else
+    ROS_INFO("Cloud thread started (priority: %d)", param.sched_priority);
+#endif
+
+    while (g_cloud_thread_running) {
+        std::unique_lock<std::mutex> lock(g_cloud_queue_mutex);
+
+        g_cloud_queue_cv.wait(lock, []() {
+            return !g_cloud_queue.empty() || !g_cloud_thread_running;
+        });
+
+        if (!g_cloud_thread_running) {
+            break;
+        }
+
+        // Process one cloud frame per wakeup to avoid hogging
+        if (!g_cloud_queue.empty() && g_cloud_thread_running) {
+            cloud_frame_t frame = std::move(g_cloud_queue.front());
+            g_cloud_queue.pop();
+            lock.unlock();
+
+            // Reconstruct capture_Image_List_t for the existing publish function
+            if (g_ros_object && g_senddtof) {
+                capture_Image_List_t stream;
+                stream.imageCount = frame.image_count;
+
+                // imageList[1] = XYZ data
+                buffer_List_t &cloud_buf = stream.imageList[1];
+                cloud_buf.width = frame.width;
+                cloud_buf.height = frame.height;
+                cloud_buf.timestamp = frame.timestamp;
+                cloud_buf.pAddr = frame.xyz_data.data();
+
+                // imageList[2] = intensity
+                buffer_List_t &intensity_buf = stream.imageList[2];
+                intensity_buf.pAddr = frame.intensity_data.data();
+
+                // imageList[3] = confidence (only when imageCount==4)
+                buffer_List_t &conf_buf = stream.imageList[3];
+                conf_buf.pAddr = frame.confidence_data.data();
+
+                g_ros_object->publishIntensityCloud(&stream, 1);
+            }
+
+            if (g_ros_object && g_pub_intensity_gray) {
+                // Reuse frame data for gray image
+                capture_Image_List_t gray_stream;
+                gray_stream.imageCount = frame.image_count;
+                buffer_List_t &gray_buf = gray_stream.imageList[2];
+                gray_buf.width = frame.width;
+                gray_buf.height = frame.height;
+                gray_buf.timestamp = frame.timestamp;
+                gray_buf.pAddr = frame.intensity_data.data();
+
+                g_ros_object->publishGrayUInt8(&gray_stream, 2);
+            }
+        }
+    }
+
+#ifdef ROS2
+    RCLCPP_INFO(rclcpp::get_logger("cloud_thread"), "Cloud thread exiting");
+#else
+    ROS_INFO("Cloud thread exiting");
+#endif
+}
+
+// Start cloud dedicated thread
+static void start_cloud_thread()
+{
+    if (!g_cloud_thread_running) {
+        if (g_cloud_thread.joinable()) {
+            g_cloud_thread.join();
+        }
+        g_cloud_thread_running = true;
+        g_cloud_thread = std::thread(cloud_thread_routine);
+#ifdef ROS2
+        RCLCPP_INFO(rclcpp::get_logger("cloud_thread"), "Cloud thread created");
+#else
+        ROS_INFO("Cloud thread created");
+#endif
+    }
+}
+
+// Stop cloud dedicated thread
+static void stop_cloud_thread()
+{
+    if (g_cloud_thread_running) {
+        g_cloud_thread_running = false;
+        g_cloud_queue_cv.notify_all();
+        if (g_cloud_thread.joinable()) {
+            g_cloud_thread.join();
+        }
+
+        std::lock_guard<std::mutex> lock(g_cloud_queue_mutex);
+        while (!g_cloud_queue.empty()) {
+            g_cloud_queue.pop();
+        }
+
+#ifdef ROS2
+        RCLCPP_INFO(rclcpp::get_logger("cloud_thread"), "Cloud thread stopped");
+#else
+        ROS_INFO("Cloud thread stopped");
+#endif
+    }
+}
+
+// Image (RGB) dedicated processing thread routine
+static void image_thread_routine()
+{
+    pthread_t this_thread = pthread_self();
+    struct sched_param param;
+    param.sched_priority = 55;
+
+    int ret = pthread_setschedparam(this_thread, SCHED_FIFO, &param);
+    if (ret != 0) {
+        ret = pthread_setschedparam(this_thread, SCHED_RR, &param);
+    }
+
+#ifdef ROS2
+    RCLCPP_INFO(rclcpp::get_logger("image_thread"), "Image thread started (priority: %d)", param.sched_priority);
+#else
+    ROS_INFO("Image thread started (priority: %d)", param.sched_priority);
+#endif
+
+    while (g_image_thread_running) {
+        std::unique_lock<std::mutex> lock(g_image_queue_mutex);
+
+        g_image_queue_cv.wait(lock, []() {
+            return !g_image_queue.empty() || !g_image_thread_running;
+        });
+
+        if (!g_image_thread_running) {
+            break;
+        }
+
+        // Process one image frame per wakeup
+        if (!g_image_queue.empty() && g_image_thread_running) {
+            image_frame_t frame = std::move(g_image_queue.front());
+            g_image_queue.pop();
+            lock.unlock();
+
+            // Reconstruct capture_Image_List_t for the existing publish function
+            if (g_ros_object && g_sendrgb) {
+                capture_Image_List_t stream;
+                stream.imageCount = 1;
+
+                buffer_List_t &img_buf = stream.imageList[0];
+                img_buf.width = frame.width;
+                img_buf.height = frame.height;
+                img_buf.timestamp = frame.timestamp;
+                img_buf.length = frame.length;
+                img_buf.pAddr = frame.jpeg_data.data();
+
+                g_ros_object->publishRgb(&stream);
+            }
+        }
+    }
+
+#ifdef ROS2
+    RCLCPP_INFO(rclcpp::get_logger("image_thread"), "Image thread exiting");
+#else
+    ROS_INFO("Image thread exiting");
+#endif
+}
+
+// Start image dedicated thread
+static void start_image_thread()
+{
+    if (!g_image_thread_running) {
+        if (g_image_thread.joinable()) {
+            g_image_thread.join();
+        }
+        g_image_thread_running = true;
+        g_image_thread = std::thread(image_thread_routine);
+#ifdef ROS2
+        RCLCPP_INFO(rclcpp::get_logger("image_thread"), "Image thread created");
+#else
+        ROS_INFO("Image thread created");
+#endif
+    }
+}
+
+// Stop image dedicated thread
+static void stop_image_thread()
+{
+    if (g_image_thread_running) {
+        g_image_thread_running = false;
+        g_image_queue_cv.notify_all();
+        if (g_image_thread.joinable()) {
+            g_image_thread.join();
+        }
+
+        std::lock_guard<std::mutex> lock(g_image_queue_mutex);
+        while (!g_image_queue.empty()) {
+            g_image_queue.pop();
+        }
+
+#ifdef ROS2
+        RCLCPP_INFO(rclcpp::get_logger("image_thread"), "Image thread stopped");
+#else
+        ROS_INFO("Image thread stopped");
+#endif
+    }
+}
+
 // Lidar data callback
 static void lidar_data_callback(const lidar_data_t *data, void *user_data)
 {
@@ -858,7 +1125,28 @@ static void lidar_data_callback(const lidar_data_t *data, void *user_data)
             break;
         case LIDAR_DT_RAW_RGB:
             if (g_sendrgb) {
-                g_ros_object->publishRgb((capture_Image_List_t *)&data->stream);
+                // Enqueue image for dedicated thread processing
+                const capture_Image_List_t *img_stream = (capture_Image_List_t *)&data->stream;
+                const buffer_List_t &img_buf = img_stream->imageList[0];
+                if (img_buf.pAddr && img_buf.length > 0) {
+                    image_frame_t frame;
+                    frame.width = img_buf.width;
+                    frame.height = img_buf.height;
+                    frame.timestamp = img_buf.timestamp;
+                    frame.length = img_buf.length;
+                    frame.jpeg_data.assign(
+                        static_cast<const uint8_t*>(img_buf.pAddr),
+                        static_cast<const uint8_t*>(img_buf.pAddr) + img_buf.length);
+
+                    {
+                        std::lock_guard<std::mutex> lock(g_image_queue_mutex);
+                        if (g_image_queue.size() >= IMAGE_QUEUE_MAX_SIZE) {
+                            g_image_queue.pop();
+                        }
+                        g_image_queue.push(std::move(frame));
+                    }
+                    g_image_queue_cv.notify_one();
+                }
             }
             update_count(&rgb_rx_fps);
             break;
@@ -878,11 +1166,54 @@ static void lidar_data_callback(const lidar_data_t *data, void *user_data)
             update_count(&imu_rx_fps);
             break;
         case LIDAR_DT_RAW_DTOF:
-            if (g_senddtof ) {
-                g_ros_object->publishIntensityCloud((capture_Image_List_t *)&data->stream, 1);
-            }
-            if (g_pub_intensity_gray) {
-                g_ros_object->publishGrayUInt8((capture_Image_List_t *)&data->stream, 2);
+            if (g_senddtof || g_pub_intensity_gray) {
+                // Enqueue cloud for dedicated thread processing
+                const capture_Image_List_t *cloud_stream = (capture_Image_List_t *)&data->stream;
+                if (cloud_stream->imageCount >= 2) {
+                    const buffer_List_t &cloud_buf = cloud_stream->imageList[1];
+                    if (cloud_buf.pAddr && cloud_buf.width > 0 && cloud_buf.height > 0) {
+                        cloud_frame_t frame;
+                        frame.width = cloud_buf.width;
+                        frame.height = cloud_buf.height;
+                        frame.timestamp = cloud_buf.timestamp;
+                        frame.image_count = cloud_stream->imageCount;
+
+                        // Copy XYZ data (imageList[1])
+                        size_t xyz_size = cloud_buf.width * cloud_buf.height * 3 * sizeof(float);
+                        frame.xyz_data.assign(
+                            static_cast<const uint8_t*>(cloud_buf.pAddr),
+                            static_cast<const uint8_t*>(cloud_buf.pAddr) + xyz_size);
+
+                        // Copy intensity data (imageList[2])
+                        const buffer_List_t &intensity_buf = cloud_stream->imageList[2];
+                        size_t intensity_size = cloud_buf.width * cloud_buf.height * sizeof(uint8_t);
+                        if (intensity_buf.pAddr) {
+                            frame.intensity_data.assign(
+                                static_cast<const uint8_t*>(intensity_buf.pAddr),
+                                static_cast<const uint8_t*>(intensity_buf.pAddr) + intensity_size);
+                        }
+
+                        // Copy confidence data (imageList[3], only when imageCount==4)
+                        if (cloud_stream->imageCount >= 4) {
+                            const buffer_List_t &conf_buf = cloud_stream->imageList[3];
+                            size_t conf_size = cloud_buf.width * cloud_buf.height * sizeof(uint16_t);
+                            if (conf_buf.pAddr) {
+                                frame.confidence_data.assign(
+                                    static_cast<const uint8_t*>(conf_buf.pAddr),
+                                    static_cast<const uint8_t*>(conf_buf.pAddr) + conf_size);
+                            }
+                        }
+
+                        {
+                            std::lock_guard<std::mutex> lock(g_cloud_queue_mutex);
+                            if (g_cloud_queue.size() >= CLOUD_QUEUE_MAX_SIZE) {
+                                g_cloud_queue.pop();
+                            }
+                            g_cloud_queue.push(std::move(frame));
+                        }
+                        g_cloud_queue_cv.notify_one();
+                    }
+                }
             }
             update_count(&dtof_rx_fps);
             break;
@@ -1697,7 +2028,10 @@ static void lidar_device_callback(const lidar_device_info_t* device, bool attach
         
         // Start IMU dedicated thread
         start_imu_thread();
-        
+        // Start cloud & image dedicated threads
+        start_cloud_thread();
+        start_image_thread();
+
         // Start custom parameter monitoring thread
         // 先确保之前的线程已经结束，避免 terminate called without an active exception
         if (g_param_monitor_thread.joinable()) {
@@ -1738,9 +2072,11 @@ static void lidar_device_callback(const lidar_device_info_t* device, bool attach
         deviceConnected = false;
         deviceDisconnected = true;
         
-        // Stop IMU dedicated thread
+        // Stop dedicated processing threads
         stop_imu_thread();
-        
+        stop_cloud_thread();
+        stop_image_thread();
+
         // Stop custom parameter monitoring thread
         g_param_monitor_running = false;
         if (g_param_monitor_thread.joinable()) {
@@ -2092,6 +2428,8 @@ int main(int argc, char *argv[])
 
     // Cleanup on normal program exit
     stop_imu_thread();
+    stop_cloud_thread();
+    stop_image_thread();
     g_param_monitor_running = false;
     if (g_param_monitor_thread.joinable()) {
         g_param_monitor_thread.join();
