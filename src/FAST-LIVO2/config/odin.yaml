@@ -4,6 +4,8 @@ common:
   imu_topic: /odin1/imu
   img_en: 1
   lidar_en: 1
+  lidar_qos_reliable: true
+  lidar_queue_size: 50
   img_qos_reliable: true
   img_queue_size: 50
   ros_driver_bug_fix: false

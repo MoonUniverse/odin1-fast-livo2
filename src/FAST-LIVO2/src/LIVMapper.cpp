@@ -116,6 +116,8 @@ void LIVMapper::readParameters()
   readParam(*this, "common.ros_driver_bug_fix", ros_driver_fix_en, false);
   readParam(*this, "common.img_en", img_en, 1);
   readParam(*this, "common.lidar_en", lidar_en, 1);
+  readParam(*this, "common.lidar_qos_reliable", lidar_qos_reliable, false);
+  readParam(*this, "common.lidar_queue_size", lidar_queue_size, 200000);
   readParam(*this, "common.img_topic", img_topic, std::string("/left_camera/image"));
   readParam(*this, "common.img_qos_reliable", img_qos_reliable, true);
   readParam(*this, "common.img_queue_size", img_queue_size, 200);
@@ -297,15 +299,24 @@ void LIVMapper::initializeFiles()
 void LIVMapper::initializeSubscribersAndPublishers()
 {
   const auto sensor_qos = rclcpp::SensorDataQoS().keep_last(200000);
+  auto lidar_qos = rclcpp::QoS(rclcpp::KeepLast(std::max(1, lidar_queue_size)));
+  if (lidar_qos_reliable)
+  {
+    lidar_qos.reliable();
+  }
+  else
+  {
+    lidar_qos.best_effort();
+  }
   if (p_pre->lidar_type == AVIA)
   {
     sub_livox_pcl = create_subscription<livox_ros_driver::CustomMsg>(
-        lid_topic, sensor_qos, std::bind(&LIVMapper::livox_pcl_cbk, this, std::placeholders::_1));
+        lid_topic, lidar_qos, std::bind(&LIVMapper::livox_pcl_cbk, this, std::placeholders::_1));
   }
   else
   {
     sub_pcl = create_subscription<sensor_msgs::PointCloud2>(
-        lid_topic, sensor_qos, std::bind(&LIVMapper::standard_pcl_cbk, this, std::placeholders::_1));
+        lid_topic, lidar_qos, std::bind(&LIVMapper::standard_pcl_cbk, this, std::placeholders::_1));
   }
   sub_imu = create_subscription<sensor_msgs::Imu>(
       imu_topic, sensor_qos, std::bind(&LIVMapper::imu_cbk, this, std::placeholders::_1));

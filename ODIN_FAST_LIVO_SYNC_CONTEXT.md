@@ -648,3 +648,90 @@ Conclusion from NUC instrumentation:
 - Driver publishes `/odin1/cloud_raw` continuously at about `10.26 Hz`, even while FAST-LIVO2 is running.
 - FAST-LIVO2 receives `/odin1/image/undistorted` at the expected `10.26 Hz`, but receives `/odin1/cloud_raw` at only about `8.19 Hz` with real header gaps around `195 ms` p95.
 - The next target is therefore DDS/subscriber delivery or FAST-LIVO2 callback/executor handling for large `PointCloud2`, not the Odin driver cloud receive/queue/publish path.
+
+## 2026-05-25 Cloud Callback Drop Fix
+
+Root cause found:
+
+- Odin driver publishes `/odin1/cloud_raw` with RELIABLE QoS.
+- FAST-LIVO2 used `rclcpp::SensorDataQoS()` for lidar subscriptions, which requests BEST_EFFORT reliability.
+- FAST-LIVO2 image subscription was already configurable and set to RELIABLE in `odin.yaml`.
+- Under FAST-LIVO2 load, large BEST_EFFORT `PointCloud2` samples were dropped before the cloud callback, while image remained stable.
+
+Implemented fix:
+
+- Added FAST-LIVO2 lidar QoS parameters:
+  - `common.lidar_qos_reliable`
+  - `common.lidar_queue_size`
+- `initializeSubscribersAndPublishers()` now builds a dedicated lidar QoS profile instead of using `SensorDataQoS()` for lidar.
+- Odin config now sets:
+
+```yaml
+common:
+  lidar_qos_reliable: true
+  lidar_queue_size: 50
+```
+
+Changed files:
+
+- `src/FAST-LIVO2/include/LIVMapper.h`
+- `src/FAST-LIVO2/src/LIVMapper.cpp`
+- `src/FAST-LIVO2/config/odin.yaml`
+
+Local build verification:
+
+```bash
+source install/setup.bash
+colcon build --packages-select fast_livo --cmake-args -DCMAKE_BUILD_TYPE=Release
+```
+
+Build passed. Only existing PCL CMake warning was observed.
+
+NUC build verification:
+
+```bash
+cd /home/nuc13/livo_workspace
+source /opt/ros/humble/setup.bash
+env PATH=/usr/bin:/bin:/opt/ros/humble/bin:/usr/local/bin \
+  colcon build --packages-select fast_livo \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+Build passed.
+
+NUC validation logs:
+
+```text
+/tmp/odin_cloud_path_diag_reliable_20260525.log
+/tmp/fast_livo_reliable_20260525.log
+/tmp/fast_livo_topic_reports/fast_livo_internal_report_20260525_161722.md
+/tmp/fast_livo_topic_reports/fast_livo_internal_report_20260525_161722.json
+```
+
+Driver during fixed FAST-LIVO2 run:
+
+```text
+sdk=825 valid=825 enq=825 deq=825 pub=825 drop=0
+rates_total sdk/enq/pub=10.267/10.267/10.267 Hz
+rates_window sdk/enq/deq/pub=10.269/10.269/10.269/10.269 Hz
+max_stamp_gap enq/pub=97.549/97.549 ms
+```
+
+FAST-LIVO2 internal report after reliable lidar QoS:
+
+```text
+Duration: 54.7s
+/odin1/imu: 21650 count, 399.299 Hz, header 399.316 Hz
+/odin1/cloud_raw: 561 count, 10.334 Hz, header 10.259 Hz
+  arrival p95 115.788 ms, p99 127.275 ms
+  header p95 97.520 ms, p99 97.525 ms
+/odin1/image/undistorted: 556 count, 10.259 Hz, header 10.259 Hz
+  arrival p95 113.449 ms, p99 118.532 ms
+  header p95 97.520 ms, p99 97.525 ms
+```
+
+Conclusion:
+
+- Reliable lidar QoS fixes the FAST-LIVO2 cloud callback drop.
+- `/odin1/cloud_raw` callback frequency now matches the driver and image cadence.
+- The previous `~195 ms` cloud header p95 gap is gone; cloud header p95 is now about `97.52 ms`.

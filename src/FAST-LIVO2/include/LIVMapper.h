@@ -129,8 +129,10 @@ public:
 
   bool lidar_pushed = false, imu_en, gravity_est_en, flg_reset = false, ba_bg_est_en = true;
   bool dense_map_en = false;
+  bool lidar_qos_reliable = false;
   bool img_qos_reliable = true;
   int img_en = 1, imu_int_frame = 3;
+  int lidar_queue_size = 200000;
   int img_queue_size = 200;
   bool normal_en = true;
   bool exposure_estimate_en = false;
