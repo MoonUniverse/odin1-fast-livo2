@@ -10,6 +10,8 @@ common:
   img_qos_reliable: true
   img_queue_size: 50
   ros_driver_bug_fix: false
+  output_run_dir: ''
+  topic_report_dir: ''
 extrin_calib:
   extrinsic_T:
   - -0.02663

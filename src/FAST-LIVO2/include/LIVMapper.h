@@ -50,6 +50,7 @@ public:
   void markPcdSaved(double save_time);
   void markImageSaved(double save_time);
   void saveFinalMap();
+  std::string outputPath(const std::string &relative_path) const;
   void recordInternalTopicSample(TopicDiagStats &stats, double header_stamp);
   void writeInternalTopicReport();
   
@@ -84,7 +85,7 @@ public:
   SLAM_MODE slam_mode_;
   std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> voxel_map;
   
-  string root_dir;
+  string root_dir, output_run_dir, internal_topic_report_dir;
   string lid_topic, imu_topic, seq_name, img_topic;
   V3D extT;
   M3D extR;

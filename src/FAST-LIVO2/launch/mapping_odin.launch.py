@@ -7,6 +7,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def load_yaml(path):
@@ -21,6 +22,9 @@ def generate_launch_description():
     topic_report_dir = LaunchConfiguration("topic_report_dir")
     pcd_save = LaunchConfiguration("pcd_save")
     image_save = LaunchConfiguration("image_save")
+    output_run_dir = LaunchConfiguration("output_run_dir")
+    save_translation_m = LaunchConfiguration("save_translation_m")
+    save_rotation_deg = LaunchConfiguration("save_rotation_deg")
 
     config = os.path.join(pkg_share, "config", "odin.yaml")
     camera = os.path.join(pkg_share, "config", "camera_odin.yaml")
@@ -32,6 +36,9 @@ def generate_launch_description():
         DeclareLaunchArgument("topic_report_dir", default_value="/tmp/fast_livo_topic_reports"),
         DeclareLaunchArgument("pcd_save", default_value="false"),
         DeclareLaunchArgument("image_save", default_value="false"),
+        DeclareLaunchArgument("output_run_dir", default_value=""),
+        DeclareLaunchArgument("save_translation_m", default_value="0.2"),
+        DeclareLaunchArgument("save_rotation_deg", default_value="10.0"),
         Node(
             package="fast_livo",
             executable="fastlivo_mapping",
@@ -41,8 +48,11 @@ def generate_launch_description():
                 load_yaml(config),
                 load_yaml(camera),
                 {
+                    "common.output_run_dir": output_run_dir,
                     "pcd_save.pcd_save_en": pcd_save,
                     "image_save.img_save_en": image_save,
+                    "save_pose_gate.translation_m": ParameterValue(save_translation_m, value_type=float),
+                    "save_pose_gate.rotation_deg": ParameterValue(save_rotation_deg, value_type=float),
                 },
             ],
         ),

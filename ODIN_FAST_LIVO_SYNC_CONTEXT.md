@@ -1053,3 +1053,130 @@ Repository hygiene:
 - `.gitignore` now ignores VS Code editor state with:
   - `.vscode/`
   - `**/.vscode/`
+
+## 2026-05-25 Desktop GUI Launcher and Save Gate Controls
+
+Added local desktop double-click support:
+
+- Workspace launcher script:
+  - `scripts/launch_odin_livo_gui.sh`
+- Desktop launcher source:
+  - `scripts/Odin_FAST-LIVO2_Control.desktop`
+- Installed local desktop entry:
+  - `/home/alienware/Desktop/Odin_FAST-LIVO2_Control.desktop`
+
+The desktop launcher runs:
+
+```bash
+cd /home/alienware/livo_workspace
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run odin_livo_control odin_livo_gui
+```
+
+Important note:
+
+- Do not use `set -u` in the launcher script because ROS Humble
+  `/opt/ros/humble/setup.bash` reads unset variables such as
+  `AMENT_TRACE_SETUP_FILES`.
+- Desktop launcher errors are written to:
+  - `/tmp/odin_livo_control/desktop_launcher.log`
+
+Added GUI controls for pose-gated save thresholds:
+
+- GUI fields:
+  - `Save Gate / Translation m`, default `0.2`
+  - `Save Gate / Rotation deg`, default `10.0`
+- These are validated as positive floats before Start.
+- GUI passes the values into FAST-LIVO2 launch as:
+  - `save_translation_m:=<value>`
+  - `save_rotation_deg:=<value>`
+
+FAST-LIVO2 launch updates:
+
+- `src/FAST-LIVO2/launch/mapping_odin.launch.py` now exposes:
+  - `save_translation_m`, default `0.2`
+  - `save_rotation_deg`, default `10.0`
+- These override:
+  - `save_pose_gate.translation_m`
+  - `save_pose_gate.rotation_deg`
+
+Local verification:
+
+```bash
+python3 -m py_compile src/odin_livo_control/odin_livo_control/gui.py src/FAST-LIVO2/launch/mapping_odin.launch.py
+colcon build --packages-select fast_livo odin_livo_control --cmake-args -DCMAKE_BUILD_TYPE=Release
+ROS_LOG_DIR=/tmp/ros-log ros2 launch fast_livo mapping_odin.launch.py --show-args
+```
+
+Build passed. `--show-args` lists `save_translation_m` and
+`save_rotation_deg`.
+
+## 2026-05-25 Per-Run FAST-LIVO2 Output Directories
+
+Implemented per-run FAST-LIVO2 output folders.
+
+Goal:
+
+- Avoid saving PCD, image, final map, pose, debug, Colmap, and internal topic
+  report files directly under shared `src/FAST-LIVO2/Log/*` directories.
+- Save each run under:
+  - `src/FAST-LIVO2/Log/YYYYMMDD_HHMMSS/`
+
+FAST-LIVO2 changes:
+
+- Added runtime output directory support:
+  - `common.output_run_dir`
+  - `common.topic_report_dir`
+- `mapping_odin.launch.py` exposes:
+  - `output_run_dir`, default `""`
+- If `common.output_run_dir` is empty, FAST-LIVO2 creates:
+  - `ROOT_DIR/Log/YYYYMMDD_HHMMSS`
+- Runtime output subdirectories are:
+  - `pcd/`
+  - `image/`
+  - `result/`
+  - `Colmap/images/`
+  - `Colmap/sparse/0/`
+  - `ref_cur_combine/`
+  - `topic_reports/`
+- `DEBUG_FILE_DIR(...)` now uses the runtime FAST-LIVO2 log directory instead
+  of fixed `ROOT_DIR/Log`.
+- Internal topic reports now default to:
+  - `<output_run_dir>/topic_reports/`
+
+GUI changes:
+
+- The GUI reuses its existing per-start timestamp and passes:
+  - `output_run_dir:=/home/alienware/livo_workspace/src/FAST-LIVO2/Log/<timestamp>`
+  - `topic_report_dir:=.../topic_reports`
+- The GUI prints the FAST-LIVO2 output directory in the FAST-LIVO2 log tab at
+  launch time.
+
+Scope note:
+
+- Odin driver `recorddata` output is unchanged and remains under the Odin driver
+  recorddata path. This feature only groups FAST-LIVO2 outputs.
+
+Local verification:
+
+```bash
+colcon build --packages-select fast_livo odin_livo_control --cmake-args -DCMAKE_BUILD_TYPE=Release
+ROS_LOG_DIR=/tmp/ros-log ros2 launch fast_livo mapping_odin.launch.py --show-args
+ROS_LOG_DIR=/tmp/ros-log timeout 5 ros2 launch fast_livo mapping_odin.launch.py rviz:=false output_run_dir:=/tmp/fast_livo_output_dir_smoke pcd_save:=false image_save:=false
+```
+
+Results:
+
+- Build passed. Only the existing Boost bind placeholder warning appeared.
+- `--show-args` includes `output_run_dir`.
+- Smoke test created:
+  - `/tmp/fast_livo_output_dir_smoke/pcd`
+  - `/tmp/fast_livo_output_dir_smoke/image`
+  - `/tmp/fast_livo_output_dir_smoke/result`
+  - `/tmp/fast_livo_output_dir_smoke/Colmap/images`
+  - `/tmp/fast_livo_output_dir_smoke/Colmap/sparse/0`
+  - `/tmp/fast_livo_output_dir_smoke/ref_cur_combine`
+  - `/tmp/fast_livo_output_dir_smoke/topic_reports`
+- Internal report files were written under the smoke test `topic_reports/`
+  directory.

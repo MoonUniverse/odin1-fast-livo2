@@ -67,6 +67,8 @@ class RunOptions:
     fast_livo_pcd: bool
     fast_livo_image: bool
     odin_recorddata: bool
+    save_translation_m: float
+    save_rotation_deg: float
 
 
 class OdinLivoController:
@@ -164,6 +166,7 @@ class OdinLivoController:
             self._run_dir = LOG_ROOT / datetime.now().strftime("%Y%m%d_%H%M%S")
             self._run_dir.mkdir(parents=True, exist_ok=True)
             ROS_LOG_DIR.mkdir(parents=True, exist_ok=True)
+            fast_livo_output_dir = WORKSPACE / "src" / "FAST-LIVO2" / "Log" / self._run_dir.name
 
             self._set_state("Odin", "Starting", "Launching Odin driver")
             odin_command = ["ros2", "launch", "odin_ros_driver", "odin1_fast_livo_ros2.launch.py"]
@@ -190,6 +193,7 @@ class OdinLivoController:
 
             self._set_state("Odin", "Running", detail)
             self._set_state("FAST-LIVO2", "Starting", "Launching mapping")
+            self._append_log("FAST-LIVO2", f"[control] Output directory: {fast_livo_output_dir}")
             livo = self._launch(
                 "FAST-LIVO2",
                 [
@@ -200,6 +204,10 @@ class OdinLivoController:
                     f"rviz:={'true' if options.rviz else 'false'}",
                     f"pcd_save:={'true' if options.fast_livo_pcd else 'false'}",
                     f"image_save:={'true' if options.fast_livo_image else 'false'}",
+                    f"output_run_dir:={fast_livo_output_dir}",
+                    f"topic_report_dir:={fast_livo_output_dir / 'topic_reports'}",
+                    f"save_translation_m:={options.save_translation_m:.6f}",
+                    f"save_rotation_deg:={options.save_rotation_deg:.6f}",
                 ],
                 self._run_dir / "fast_livo.log",
             )
@@ -348,6 +356,8 @@ class ControlPanel(tk.Tk):
         self._fast_livo_pcd = tk.BooleanVar(value=False)
         self._fast_livo_image = tk.BooleanVar(value=False)
         self._odin_recorddata = tk.BooleanVar(value=False)
+        self._save_translation_m = tk.StringVar(value="0.2")
+        self._save_rotation_deg = tk.StringVar(value="10.0")
         self._log_widgets: Dict[str, tk.Text] = {}
 
         self._build_ui()
@@ -357,7 +367,7 @@ class ControlPanel(tk.Tk):
 
     def _build_ui(self):
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(3, weight=1)
+        self.rowconfigure(4, weight=1)
 
         top = ttk.Frame(self, padding=12)
         top.grid(row=0, column=0, sticky="ew")
@@ -395,8 +405,30 @@ class ControlPanel(tk.Tk):
         )
         ttk.Label(env, text=env_text).grid(row=0, column=0, sticky="w")
 
+        save_gate = ttk.LabelFrame(self, text="Save Gate", padding=12)
+        save_gate.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
+        save_gate.columnconfigure(4, weight=1)
+        ttk.Label(save_gate, text="Translation m").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Spinbox(
+            save_gate,
+            from_=0.01,
+            to=100.0,
+            increment=0.01,
+            textvariable=self._save_translation_m,
+            width=10,
+        ).grid(row=0, column=1, sticky="w", padx=(0, 24))
+        ttk.Label(save_gate, text="Rotation deg").grid(row=0, column=2, sticky="w", padx=(0, 8))
+        ttk.Spinbox(
+            save_gate,
+            from_=0.1,
+            to=360.0,
+            increment=0.5,
+            textvariable=self._save_rotation_deg,
+            width=10,
+        ).grid(row=0, column=3, sticky="w", padx=(0, 24))
+
         main = ttk.Frame(self)
-        main.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        main.grid(row=4, column=0, sticky="nsew", padx=12, pady=(0, 12))
         self._build_logs(main)
 
     def _build_logs(self, parent: ttk.Frame):
@@ -417,6 +449,17 @@ class ControlPanel(tk.Tk):
             self._log_widgets[name] = text
 
     def _start(self):
+        try:
+            save_translation_m = float(self._save_translation_m.get())
+            save_rotation_deg = float(self._save_rotation_deg.get())
+            if save_translation_m <= 0.0 or save_rotation_deg <= 0.0:
+                raise ValueError("Save gate values must be positive")
+        except ValueError as exc:
+            self._states["System"].set("Failed")
+            self._details["System"].set("Invalid save gate")
+            self._add_log("System", f"[control] Invalid save gate: {exc}")
+            return
+
         self._states["System"].set("Starting")
         self._details["System"].set("")
         self._controller.start(RunOptions(
@@ -424,6 +467,8 @@ class ControlPanel(tk.Tk):
             fast_livo_pcd=self._fast_livo_pcd.get(),
             fast_livo_image=self._fast_livo_image.get(),
             odin_recorddata=self._odin_recorddata.get(),
+            save_translation_m=save_translation_m,
+            save_rotation_deg=save_rotation_deg,
         ))
 
     def _stop(self):

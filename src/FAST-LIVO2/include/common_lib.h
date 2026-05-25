@@ -25,6 +25,7 @@ using namespace Eigen;
 using namespace Sophus;
 
 inline bool g_fast_livo_verbose = false;
+inline string g_fast_livo_log_dir = string(ROOT_DIR) + "Log";
 
 #define print_line std::cout << __FILE__ << ", " << __LINE__ << std::endl;
 #define G_m_s2 (9.81)   // Gravaty const in GuangDong/China
@@ -34,7 +35,7 @@ inline bool g_fast_livo_verbose = false;
 #define SIZE_SMALL (100)
 #define VEC_FROM_ARRAY(v) v[0], v[1], v[2]
 #define MAT_FROM_ARRAY(v) v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]
-#define DEBUG_FILE_DIR(name) (string(string(ROOT_DIR) + "Log/" + name))
+#define DEBUG_FILE_DIR(name) (g_fast_livo_log_dir + "/" + string(name))
 
 enum LID_TYPE
 {

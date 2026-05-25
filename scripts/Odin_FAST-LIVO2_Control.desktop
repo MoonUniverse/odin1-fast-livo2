@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Odin FAST-LIVO2 Control
+Comment=Start the Odin and FAST-LIVO2 desktop control panel
+Exec=/home/alienware/livo_workspace/scripts/launch_odin_livo_gui.sh
+Path=/home/alienware/livo_workspace
+Icon=applications-engineering
+Terminal=false
+Categories=Development;
