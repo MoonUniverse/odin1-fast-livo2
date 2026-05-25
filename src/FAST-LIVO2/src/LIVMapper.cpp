@@ -14,6 +14,10 @@ which is included as part of this source code package.
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <ctime>
+#include <filesystem>
+#include <sstream>
 
 namespace
 {
@@ -72,6 +76,13 @@ LIVMapper::LIVMapper(const rclcpp::NodeOptions &options)
   p_pre.reset(new Preprocess());
   p_imu.reset(new ImuProcess());
   tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
+  diag_start_time = std::chrono::steady_clock::now();
+  diag_imu.name = "/odin1/imu";
+  diag_imu.expected_hz = 400.0;
+  diag_cloud.name = "/odin1/cloud_raw";
+  diag_cloud.expected_hz = 10.0;
+  diag_image.name = "/odin1/image/undistorted";
+  diag_image.expected_hz = 10.0;
 
   readParameters();
   VoxelMapConfig voxel_config;
@@ -85,6 +96,8 @@ LIVMapper::LIVMapper(const rclcpp::NodeOptions &options)
   pcl_wait_pub.reset(new PointCloudXYZI());
   pcl_wait_save.reset(new PointCloudXYZRGB());
   pcl_wait_save_intensity.reset(new PointCloudXYZI());
+  pcl_final_map_rgb.reset(new PointCloudXYZRGB());
+  pcl_final_map_intensity.reset(new PointCloudXYZI());
   voxelmap_manager.reset(new VoxelMapManager(voxel_config, voxel_map));
   vio_manager.reset(new VIOManager());
   root_dir = ROOT_DIR;
@@ -149,8 +162,14 @@ void LIVMapper::readParameters()
   readParam(*this, "pcd_save.interval", pcd_save_interval, -1);
   readParam(*this, "pcd_save.pcd_save_en", pcd_save_en, false);
   readParam(*this, "pcd_save.type", pcd_save_type, 0);
+  readParam(*this, "pcd_save.trigger_mode", pcd_save_trigger_mode, std::string("interval"));
+  readParam(*this, "pcd_save.final_map_save_en", final_map_save_en, false);
   readParam(*this, "image_save.img_save_en", img_save_en, false);
   readParam(*this, "image_save.interval", img_save_interval, 1);
+  readParam(*this, "image_save.trigger_mode", img_save_trigger_mode, std::string("interval"));
+  readParam(*this, "save_pose_gate.translation_m", save_pose_translation_m, 0.2);
+  readParam(*this, "save_pose_gate.rotation_deg", save_pose_rotation_deg, 10.0);
+  readParam(*this, "save_pose_gate.min_interval_s", save_pose_min_interval_s, 0.0);
 
   readParam(*this, "pcd_save.colmap_output_en", colmap_output_en, false);
   readParam(*this, "pcd_save.filter_size_pcd", filter_size_pcd, 0.5);
@@ -246,6 +265,10 @@ void LIVMapper::initializeComponents()
 
 void LIVMapper::initializeFiles() 
 {
+  std::filesystem::create_directories(std::string(ROOT_DIR) + "Log/pcd");
+  std::filesystem::create_directories(std::string(ROOT_DIR) + "Log/image");
+  std::filesystem::create_directories(std::string(ROOT_DIR) + "Log/result");
+
   if (pcd_save_en && colmap_output_en)
   {
       const std::string folderPath = std::string(ROOT_DIR) + "/scripts/colmap_output.sh";
@@ -636,12 +659,186 @@ void LIVMapper::savePCD()
   }
 }
 
+bool LIVMapper::shouldSaveForPose(bool has_last_pose, const V3D &last_pos, const M3D &last_rot, double last_time, double current_time) const
+{
+  if (!has_last_pose) return true;
+  if (save_pose_min_interval_s > 0.0 && last_time > 0.0 && current_time - last_time < save_pose_min_interval_s) return false;
+
+  const double trans_delta = (_state.pos_end - last_pos).norm();
+  const M3D rot_delta = last_rot.transpose() * _state.rot_end;
+  const double cos_angle = std::clamp((rot_delta.trace() - 1.0) * 0.5, -1.0, 1.0);
+  const double rot_delta_deg = std::acos(cos_angle) * 180.0 / M_PI;
+  return trans_delta >= save_pose_translation_m || rot_delta_deg >= save_pose_rotation_deg;
+}
+
+void LIVMapper::markPcdSaved(double save_time)
+{
+  last_pcd_save_pos = _state.pos_end;
+  last_pcd_save_rot = _state.rot_end;
+  last_pcd_save_time = save_time;
+  last_pcd_save_pose_valid = true;
+}
+
+void LIVMapper::markImageSaved(double save_time)
+{
+  last_image_save_pos = _state.pos_end;
+  last_image_save_rot = _state.rot_end;
+  last_image_save_time = save_time;
+  last_image_save_pose_valid = true;
+}
+
+void LIVMapper::saveFinalMap()
+{
+  if (!final_map_save_en) return;
+
+  const std::string final_map_dir = std::string(ROOT_DIR) + "Log/pcd/final_map.pcd";
+  const std::string final_rgb_map_dir = std::string(ROOT_DIR) + "Log/pcd/final_map_rgb.pcd";
+  pcl::PCDWriter pcd_writer;
+  if (pcl_final_map_intensity && !pcl_final_map_intensity->empty())
+  {
+    pcd_writer.writeBinary(final_map_dir, *pcl_final_map_intensity);
+    std::cout << GREEN << "Final intensity map saved to: " << final_map_dir
+              << " with point count: " << pcl_final_map_intensity->points.size() << RESET << std::endl;
+  }
+  if (pcl_final_map_rgb && !pcl_final_map_rgb->empty())
+  {
+    const std::string rgb_path = (pcl_final_map_intensity && !pcl_final_map_intensity->empty()) ? final_rgb_map_dir : final_map_dir;
+    pcd_writer.writeBinary(rgb_path, *pcl_final_map_rgb);
+    std::cout << GREEN << "Final RGB map saved to: " << rgb_path
+              << " with point count: " << pcl_final_map_rgb->points.size() << RESET << std::endl;
+  }
+}
+
+void LIVMapper::recordInternalTopicSample(TopicDiagStats &stats, double header_stamp)
+{
+  const auto now = std::chrono::steady_clock::now();
+  const double arrival_s = std::chrono::duration<double>(now - diag_start_time).count();
+  stats.arrival_times.push_back(arrival_s);
+  stats.header_stamps.push_back(header_stamp);
+}
+
+namespace
+{
+double percentileMs(std::vector<double> values_s, double pct)
+{
+  if (values_s.empty()) return -1.0;
+  std::sort(values_s.begin(), values_s.end());
+  const size_t idx = static_cast<size_t>(std::round((values_s.size() - 1) * pct / 100.0));
+  return values_s[std::min(idx, values_s.size() - 1)] * 1000.0;
+}
+
+std::vector<double> makeIntervals(const std::vector<double> &values)
+{
+  std::vector<double> result;
+  if (values.size() < 2) return result;
+  result.reserve(values.size() - 1);
+  for (size_t i = 1; i < values.size(); ++i) result.push_back(values[i] - values[i - 1]);
+  return result;
+}
+
+double hzFromSeries(const std::vector<double> &values)
+{
+  if (values.size() < 2) return 0.0;
+  const double duration = values.back() - values.front();
+  return duration > 0.0 ? static_cast<double>(values.size() - 1) / duration : 0.0;
+}
+
+void writeJsonTopic(std::ofstream &out, const LIVMapper::TopicDiagStats &stats, bool trailing_comma)
+{
+  const auto arrival_intervals = makeIntervals(stats.arrival_times);
+  const auto header_intervals = makeIntervals(stats.header_stamps);
+  const double hz = hzFromSeries(stats.arrival_times);
+  const double header_hz = hzFromSeries(stats.header_stamps);
+  const std::string status =
+      stats.expected_hz > 0.0 && hz < stats.expected_hz * 0.8 ? "low_rate" : "ok";
+
+  out << "    \"" << stats.name << "\": {\n"
+      << "      \"expected_hz\": " << stats.expected_hz << ",\n"
+      << "      \"status\": \"" << status << "\",\n"
+      << "      \"count\": " << stats.arrival_times.size() << ",\n"
+      << "      \"hz\": " << hz << ",\n"
+      << "      \"header_hz\": " << header_hz << ",\n"
+      << "      \"arrival_interval_ms\": {\n"
+      << "        \"p50\": " << percentileMs(arrival_intervals, 50.0) << ",\n"
+      << "        \"p95\": " << percentileMs(arrival_intervals, 95.0) << ",\n"
+      << "        \"p99\": " << percentileMs(arrival_intervals, 99.0) << "\n"
+      << "      },\n"
+      << "      \"header_interval_ms\": {\n"
+      << "        \"p50\": " << percentileMs(header_intervals, 50.0) << ",\n"
+      << "        \"p95\": " << percentileMs(header_intervals, 95.0) << ",\n"
+      << "        \"p99\": " << percentileMs(header_intervals, 99.0) << "\n"
+      << "      }\n"
+      << "    }" << (trailing_comma ? "," : "") << "\n";
+}
+
+void writeMdTopic(std::ofstream &out, const LIVMapper::TopicDiagStats &stats)
+{
+  const auto arrival_intervals = makeIntervals(stats.arrival_times);
+  const auto header_intervals = makeIntervals(stats.header_stamps);
+  const double hz = hzFromSeries(stats.arrival_times);
+  const double header_hz = hzFromSeries(stats.header_stamps);
+  out << "| `" << stats.name << "` | " << stats.arrival_times.size()
+      << " | " << std::fixed << std::setprecision(3) << hz
+      << " | " << header_hz
+      << " | " << percentileMs(arrival_intervals, 95.0)
+      << " | " << percentileMs(header_intervals, 95.0) << " |\n";
+}
+} // namespace
+
+void LIVMapper::writeInternalTopicReport()
+{
+  const std::filesystem::path output_dir("/tmp/fast_livo_topic_reports");
+  std::filesystem::create_directories(output_dir);
+
+  auto now = std::chrono::system_clock::now();
+  std::time_t t = std::chrono::system_clock::to_time_t(now);
+  std::tm tm{};
+  localtime_r(&t, &tm);
+  char stamp[32];
+  std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm);
+
+  const std::filesystem::path json_path = output_dir / ("fast_livo_internal_report_" + std::string(stamp) + ".json");
+  const std::filesystem::path md_path = output_dir / ("fast_livo_internal_report_" + std::string(stamp) + ".md");
+  const double duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - diag_start_time).count();
+
+  std::ofstream json(json_path);
+  json << "{\n"
+       << "  \"source\": \"fast_livo_internal_callbacks\",\n"
+       << "  \"duration_s\": " << duration_s << ",\n"
+       << "  \"topics\": {\n";
+  writeJsonTopic(json, diag_imu, true);
+  writeJsonTopic(json, diag_cloud, true);
+  writeJsonTopic(json, diag_image, false);
+  json << "  }\n"
+       << "}\n";
+
+  std::ofstream md(md_path);
+  md << "# FAST-LIVO2 Internal Topic Diagnostics\n\n"
+     << "- Source: FAST-LIVO2 callbacks, no external image/cloud subscription\n"
+     << "- Duration: `" << std::fixed << std::setprecision(1) << duration_s << "s`\n\n"
+     << "| Topic | Count | Hz | Header Hz | Arrival p95 ms | Header p95 ms |\n"
+     << "|---|---:|---:|---:|---:|---:|\n";
+  writeMdTopic(md, diag_imu);
+  writeMdTopic(md, diag_cloud);
+  writeMdTopic(md, diag_image);
+
+  std::cout << GREEN << "Internal topic report written to: " << json_path << " and " << md_path << RESET << std::endl;
+}
+
 void LIVMapper::run() 
 {
   rclcpp::Rate rate(5000);
   while (rclcpp::ok())
   {
-    rclcpp::spin_some(this->get_node_base_interface());
+    try
+    {
+      rclcpp::spin_some(this->get_node_base_interface());
+    }
+    catch (const rclcpp::exceptions::RCLError &e)
+    {
+      RCLCPP_WARN(this->get_logger(), "Stopping FAST-LIVO2 after ROS context error during shutdown: %s", e.what());
+      break;
+    }
     if (!sync_packages(LidarMeasures)) 
     {
       rate.sleep();
@@ -655,7 +852,9 @@ void LIVMapper::run()
 
     stateEstimationAndMapping();
   }
+  writeInternalTopicReport();
   savePCD();
+  saveFinalMap();
 }
 
 void LIVMapper::prop_imu_once(StatesGroup &imu_prop_state, const double dt, V3D acc_avr, V3D angvel_avr)
@@ -823,6 +1022,7 @@ void LIVMapper::standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstSharedPtr 
   lid_raw_data_buffer.push_back(ptr);
   lid_header_time_buffer.push_back(cur_head_time);
   last_timestamp_lidar = cur_head_time;
+  recordInternalTopicSample(diag_cloud, cur_head_time);
 
   mtx_buffer.unlock();
   sig_buffer.notify_all();
@@ -866,6 +1066,7 @@ void LIVMapper::livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstSharedPtr 
   lid_raw_data_buffer.push_back(ptr);
   lid_header_time_buffer.push_back(cur_head_time);
   last_timestamp_lidar = cur_head_time;
+  recordInternalTopicSample(diag_cloud, cur_head_time);
 
   mtx_buffer.unlock();
   sig_buffer.notify_all();
@@ -911,6 +1112,7 @@ void LIVMapper::imu_cbk(const sensor_msgs::Imu::ConstSharedPtr &msg_in)
   last_timestamp_imu = timestamp;
 
   imu_buffer.push_back(msg);
+  recordInternalTopicSample(diag_imu, timestamp);
   // cout<<"got imu: "<<timestamp<<" imu size "<<imu_buffer.size()<<endl;
   mtx_buffer.unlock();
   if (imu_prop_enable)
@@ -975,6 +1177,7 @@ void LIVMapper::img_cbk(const sensor_msgs::ImageConstPtr &msg_in)
   cv::Mat img_cur = getImageFromMsg(msg);
   img_buffer.push_back(img_cur);
   img_time_buffer.push_back(img_time_correct);
+  recordInternalTopicSample(diag_image, img_time_correct);
 
   // ROS_INFO("Correct Image time: %.6f", img_time_correct);
 
@@ -1305,22 +1508,60 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
   std::stringstream ss_time;
   ss_time << std::fixed << std::setprecision(6) << update_time;
 
+  if (final_map_save_en)
+  {
+    if (LidarMeasures.lio_vio_flg == LIO || LidarMeasures.lio_vio_flg == LO)
+    {
+      if (!pcl_w_wait_pub->empty()) *pcl_final_map_intensity += *pcl_w_wait_pub;
+    }
+    if (slam_mode_ == LIVO)
+    {
+      if (LidarMeasures.lio_vio_flg == VIO && !laserCloudWorldRGB->empty()) *pcl_final_map_rgb += *laserCloudWorldRGB;
+    }
+  }
+
   if (pcd_save_en)
   {
     static int scan_wait_num = 0;
+    const bool pose_trigger = (pcd_save_trigger_mode == "pose_delta");
+    bool pcd_saved = false;
 
     switch (pcd_save_type)
     {
       case 0: /** world frame **/
-        if (slam_mode_ == LIVO)
+        if (pose_trigger)
         {
-          *pcl_wait_save += *laserCloudWorldRGB;
+          const bool has_rgb_cloud = slam_mode_ == LIVO && LidarMeasures.lio_vio_flg == VIO && !laserCloudWorldRGB->empty();
+          const bool has_intensity_cloud = slam_mode_ != LIVO && !pcl_w_wait_pub->empty();
+          if ((has_rgb_cloud || has_intensity_cloud) &&
+              shouldSaveForPose(last_pcd_save_pose_valid, last_pcd_save_pos, last_pcd_save_rot, last_pcd_save_time, update_time))
+          {
+            string all_points_dir(string(string(ROOT_DIR) + "Log/pcd/") + ss_time.str() + string(".pcd"));
+            pcl::PCDWriter pcd_writer;
+            cout << "pose-gated scan saved to " << all_points_dir << endl;
+            if (has_rgb_cloud)
+            {
+              pcd_writer.writeBinary(all_points_dir, *laserCloudWorldRGB);
+            }
+            else
+            {
+              pcd_writer.writeBinary(all_points_dir, *pcl_w_wait_pub);
+            }
+            pcd_saved = true;
+          }
         }
         else
         {
-          *pcl_wait_save_intensity += *pcl_w_wait_pub;
+          if (slam_mode_ == LIVO)
+          {
+            *pcl_wait_save += *laserCloudWorldRGB;
+          }
+          else
+          {
+            *pcl_wait_save_intensity += *pcl_w_wait_pub;
+          }
+          if(LidarMeasures.lio_vio_flg == LIO || LidarMeasures.lio_vio_flg == LO) scan_wait_num++;
         }
-        if(LidarMeasures.lio_vio_flg == LIO || LidarMeasures.lio_vio_flg == LO) scan_wait_num++;
         break;
 
       case 1: /** body frame **/
@@ -1332,20 +1573,38 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
           {
             RGBpointBodyLidarToIMU(&feats_undistort->points[i], &laserCloudBody->points[i]);
           }
-          *pcl_wait_save_intensity += *laserCloudBody;
-          scan_wait_num++;
-          cout << "save body frame points: " << pcl_wait_save_intensity->points.size() << endl;
+          if (pose_trigger)
+          {
+            if (!laserCloudBody->empty() &&
+                shouldSaveForPose(last_pcd_save_pose_valid, last_pcd_save_pos, last_pcd_save_rot, last_pcd_save_time, update_time))
+            {
+              string all_points_dir(string(string(ROOT_DIR) + "Log/pcd/") + ss_time.str() + string(".pcd"));
+              pcl::PCDWriter pcd_writer;
+              cout << "pose-gated body frame scan saved to " << all_points_dir << endl;
+              pcd_writer.writeBinary(all_points_dir, *laserCloudBody);
+              pcd_saved = true;
+            }
+          }
+          else
+          {
+            *pcl_wait_save_intensity += *laserCloudBody;
+            scan_wait_num++;
+            cout << "save body frame points: " << pcl_wait_save_intensity->points.size() << endl;
+          }
         }
-        pcd_save_interval = 1;
+        if (!pose_trigger) pcd_save_interval = 1;
         
         break;
 
       default:
-        pcd_save_interval = 1;
-        scan_wait_num++;
+        if (!pose_trigger)
+        {
+          pcd_save_interval = 1;
+          scan_wait_num++;
+        }
         break;
     }
-    if ((pcl_wait_save->size() > 0 || pcl_wait_save_intensity->size() > 0) && pcd_save_interval > 0 && scan_wait_num >= pcd_save_interval)
+    if (!pose_trigger && (pcl_wait_save->size() > 0 || pcl_wait_save_intensity->size() > 0) && pcd_save_interval > 0 && scan_wait_num >= pcd_save_interval)
     {
       string all_points_dir(string(string(ROOT_DIR) + "Log/pcd/") + ss_time.str() + string(".pcd"));
 
@@ -1363,22 +1622,34 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
         PointCloudXYZI().swap(*pcl_wait_save_intensity);
       }
       scan_wait_num = 0;
+      pcd_saved = true;
     }
     
-    if(LidarMeasures.lio_vio_flg == LIO || LidarMeasures.lio_vio_flg == LO)
+    if(pcd_saved)
     {
       Eigen::Quaterniond q(_state.rot_end);
       fout_lidar_pos << std::fixed << std::setprecision(6);
-      fout_lidar_pos <<  LidarMeasures.measures.back().lio_time << " " << _state.pos_end[0] << " " << _state.pos_end[1] << " " << _state.pos_end[2] << " " << q.x() << " " << q.y() << " " << q.z()
+      fout_lidar_pos <<  update_time << " " << _state.pos_end[0] << " " << _state.pos_end[1] << " " << _state.pos_end[2] << " " << q.x() << " " << q.y() << " " << q.z()
           << " " << q.w() << " " << endl;
+      markPcdSaved(update_time);
     }
   }
   if (img_save_en && LidarMeasures.lio_vio_flg == VIO)
   {
     static int img_wait_num = 0;
-    img_wait_num++;
+    const bool pose_trigger = (img_save_trigger_mode == "pose_delta");
+    bool save_image = false;
+    if (pose_trigger)
+    {
+      save_image = shouldSaveForPose(last_image_save_pose_valid, last_image_save_pos, last_image_save_rot, last_image_save_time, update_time);
+    }
+    else
+    {
+      img_wait_num++;
+      save_image = img_save_interval > 0 && img_wait_num >= img_save_interval;
+    }
 
-    if (img_save_interval > 0 && img_wait_num >= img_save_interval)
+    if (save_image)
     {
       imwrite(string(string(ROOT_DIR) + "Log/image/") + ss_time.str() + string(".png"), vio_manager->img_rgb);
       
@@ -1387,6 +1658,7 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
       fout_visual_pos << LidarMeasures.measures.back().vio_time << " " << _state.pos_end[0] << " " << _state.pos_end[1] << " " << _state.pos_end[2] << " "
             << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << std::endl;
       img_wait_num = 0;
+      markImageSaved(update_time);
     }
   }
 

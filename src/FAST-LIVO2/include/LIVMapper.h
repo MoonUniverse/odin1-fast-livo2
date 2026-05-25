@@ -20,10 +20,19 @@ which is included as part of this source code package.
 #include <image_transport/image_transport.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <vikit/pinhole_camera.h>
+#include <chrono>
 
 class LIVMapper : public rclcpp::Node
 {
 public:
+  struct TopicDiagStats
+  {
+    string name;
+    double expected_hz = 0.0;
+    vector<double> arrival_times;
+    vector<double> header_stamps;
+  };
+
   explicit LIVMapper(const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
   ~LIVMapper();
   void initializeSubscribersAndPublishers();
@@ -37,6 +46,12 @@ public:
   void handleLIO();
   void savePCD();
   void processImu();
+  bool shouldSaveForPose(bool has_last_pose, const V3D &last_pos, const M3D &last_rot, double last_time, double current_time) const;
+  void markPcdSaved(double save_time);
+  void markImageSaved(double save_time);
+  void saveFinalMap();
+  void recordInternalTopicSample(TopicDiagStats &stats, double header_stamp);
+  void writeInternalTopicReport();
   
   bool sync_packages(LidarMeasureGroup &meas);
   void prop_imu_once(StatesGroup &imu_prop_state, const double dt, V3D acc_avr, V3D angvel_avr);
@@ -87,7 +102,14 @@ public:
   double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 
   bool lidar_map_inited = false, pcd_save_en = false, img_save_en = false, pub_effect_point_en = false, pose_output_en = false, ros_driver_fix_en = false, hilti_en = false;
+  bool final_map_save_en = false;
   int img_save_interval = 1, pcd_save_interval = -1, pcd_save_type = 0;
+  string pcd_save_trigger_mode = "interval", img_save_trigger_mode = "interval";
+  double save_pose_translation_m = 0.2, save_pose_rotation_deg = 10.0, save_pose_min_interval_s = 0.0;
+  bool last_pcd_save_pose_valid = false, last_image_save_pose_valid = false;
+  V3D last_pcd_save_pos = V3D::Zero(), last_image_save_pos = V3D::Zero();
+  M3D last_pcd_save_rot = M3D::Identity(), last_image_save_rot = M3D::Identity();
+  double last_pcd_save_time = -1.0, last_image_save_time = -1.0;
   int pub_scan_num = 1;
 
   StatesGroup imu_propagate, latest_ekf_state;
@@ -142,6 +164,8 @@ public:
   PointCloudXYZI::Ptr pcl_wait_pub;
   PointCloudXYZRGB::Ptr pcl_wait_save;
   PointCloudXYZI::Ptr pcl_wait_save_intensity;
+  PointCloudXYZRGB::Ptr pcl_final_map_rgb;
+  PointCloudXYZI::Ptr pcl_final_map_intensity;
 
   ofstream fout_pre, fout_out, fout_visual_pos, fout_lidar_pos, fout_points;
 
@@ -184,6 +208,8 @@ public:
   rclcpp::TimerBase::SharedPtr imu_prop_timer;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   std::unique_ptr<vk::AbstractCamera> camera_;
+  std::chrono::steady_clock::time_point diag_start_time;
+  TopicDiagStats diag_imu, diag_cloud, diag_image;
 
   int frame_num = 0;
   double aver_time_consu = 0;

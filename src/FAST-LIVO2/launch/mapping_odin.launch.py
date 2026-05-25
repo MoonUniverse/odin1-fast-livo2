@@ -17,6 +17,8 @@ def load_yaml(path):
 def generate_launch_description():
     pkg_share = get_package_share_directory("fast_livo")
     rviz = LaunchConfiguration("rviz")
+    topic_report = LaunchConfiguration("topic_report")
+    topic_report_dir = LaunchConfiguration("topic_report_dir")
 
     config = os.path.join(pkg_share, "config", "odin.yaml")
     camera = os.path.join(pkg_share, "config", "camera_odin.yaml")
@@ -24,6 +26,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("rviz", default_value="false"),
+        DeclareLaunchArgument("topic_report", default_value="false"),
+        DeclareLaunchArgument("topic_report_dir", default_value="/tmp/fast_livo_topic_reports"),
         Node(
             package="fast_livo",
             executable="fastlivo_mapping",
@@ -37,5 +41,13 @@ def generate_launch_description():
             name="rviz2",
             arguments=["-d", rviz_config],
             condition=IfCondition(rviz),
+        ),
+        Node(
+            package="topic_monitor",
+            executable="topic_report",
+            name="topic_report",
+            output="screen",
+            parameters=[{"output_dir": topic_report_dir}],
+            condition=IfCondition(topic_report),
         ),
     ])

@@ -230,6 +230,10 @@ class RosNodeControlInterface {
     
 RosNodeControlInterface* getRosNodeControl();
 
+uint64_t odin_cloud_diag_now_ns();
+void odin_cloud_diag_record_publish(uint64_t sensor_timestamp_ns, uint64_t processing_duration_ns);
+void odin_cloud_diag_record_publish_invalid();
+
 // Multi-sensor publisher class
 class MultiSensorPublisher {
 public:
@@ -578,11 +582,14 @@ void process_pair(const ImageConstPtr &rgb_msg, const PointCloud2ConstPtr &pcd_m
 
 void publishIntensityCloud(capture_Image_List_t* stream, int idx)
 {
+    const uint64_t diag_start_ns = odin_cloud_diag_now_ns();
+
     // Check index validity
     if (idx < 0 || idx >= 10) {
         #ifndef ROS2
             ROS_ERROR("Invalid index %d for intensity cloud", idx);
         #endif
+        odin_cloud_diag_record_publish_invalid();
         return;
     }
 
@@ -592,6 +599,7 @@ void publishIntensityCloud(capture_Image_List_t* stream, int idx)
         #ifndef ROS2
             ROS_ERROR("Invalid point cloud: null data pointer at index %d", idx);
         #endif
+        odin_cloud_diag_record_publish_invalid();
         return;
     }
  
@@ -600,6 +608,7 @@ void publishIntensityCloud(capture_Image_List_t* stream, int idx)
             ROS_ERROR("Invalid point cloud dimensions: %dx%d at index %d", 
                      cloud.width, cloud.height, idx);
         #endif
+        odin_cloud_diag_record_publish_invalid();
         return;
     }
 
@@ -731,6 +740,7 @@ void publishIntensityCloud(capture_Image_List_t* stream, int idx)
     #else
         cloud_pub_.publish(msg);
     #endif
+    odin_cloud_diag_record_publish(cloud.timestamp, odin_cloud_diag_now_ns() - diag_start_ns);
 }
 
 void publishGrayUInt8(capture_Image_List_t *stream, int idx) {

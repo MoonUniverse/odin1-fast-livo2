@@ -213,3 +213,42 @@ env PATH=/usr/bin:/bin:/opt/ros/humble/bin:/usr/local/bin \
 ```
 
 Build result: all four packages built successfully with only existing warnings.
+
+## 2026-05-25 Handoff: Latest Uncommitted Work
+
+The root workspace file `/home/alienware/livo_workspace/ODIN_FAST_LIVO_SYNC_CONTEXT.md`
+contains the full latest handoff. Key points:
+
+- Latest files were synchronized to:
+  - `nuc13@10.56.238.241:/home/nuc13/livo_workspace`
+- FAST-LIVO2 now supports pose-gated PCD/image saving:
+  - `pcd_save.trigger_mode: pose_delta`
+  - `image_save.trigger_mode: pose_delta`
+  - `save_pose_gate.translation_m: 0.2`
+  - `save_pose_gate.rotation_deg: 10.0`
+- FAST-LIVO2 saves final maps on shutdown:
+  - `src/FAST-LIVO2/Log/pcd/final_map.pcd`
+  - `src/FAST-LIVO2/Log/pcd/final_map_rgb.pcd`
+- FAST-LIVO2 writes internal callback-based topic diagnostics on shutdown:
+  - `/tmp/fast_livo_topic_reports/fast_livo_internal_report_*.json`
+  - `/tmp/fast_livo_topic_reports/fast_livo_internal_report_*.md`
+- External Python `topic_monitor/topic_report` is disabled by default in
+  `mapping_odin.launch.py` because it can undercount large image/cloud topics.
+  Use internal reports as source of truth.
+- Ctrl-C/shutdown fixes were added:
+  - `main.cpp` exits with `_Exit(0)` after `mapper->run()`.
+  - `LIVMapper::run()` catches `rclcpp::exceptions::RCLError` around `spin_some()`.
+  - `topic_report.py` writes and exits with `os._exit(0)`.
+- Latest inspected internal report:
+  - `/tmp/fast_livo_topic_reports/fast_livo_internal_report_20260525_154538.md`
+- Latest internal callback frequencies:
+  - `/odin1/imu`: `399.047 Hz`, header `399.390 Hz`
+  - `/odin1/cloud_raw`: `9.017 Hz`, header `9.014 Hz`
+  - `/odin1/image/undistorted`: `10.266 Hz`, header `10.259 Hz`
+- Current real issue:
+  - Image and IMU are stable.
+  - `/odin1/cloud_raw` is genuinely less stable in FAST-LIVO2 callbacks.
+  - Cloud header p95 is about `194.948 ms`, p99 about `389.894 ms`, indicating skipped cloud intervals.
+- Recommended next step:
+  - Instrument Odin driver cloud receive/enqueue/drop/publish counters in
+    `host_sdk_sample.h` / `host_sdk_sample.cpp` to locate where cloud frames are lost.

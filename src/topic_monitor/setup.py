@@ -16,6 +16,7 @@ setup(
         "console_scripts": [
             "rate_monitor = topic_monitor.topic_rate_monitor:main",
             "topic_tester = topic_monitor.topic_tester:main",
+            "topic_report = topic_monitor.topic_report:main",
         ],
     },
 )

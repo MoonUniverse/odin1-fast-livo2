@@ -120,6 +120,216 @@ static std::mutex g_cloud_queue_mutex;
 static std::condition_variable g_cloud_queue_cv;
 static const size_t CLOUD_QUEUE_MAX_SIZE = 20;
 
+struct cloud_path_diag_t {
+    std::atomic<uint64_t> sdk_callbacks{0};
+    std::atomic<uint64_t> sdk_valid_frames{0};
+    std::atomic<uint64_t> sdk_invalid_streams{0};
+    std::atomic<uint64_t> sdk_invalid_clouds{0};
+    std::atomic<uint64_t> enqueued{0};
+    std::atomic<uint64_t> queue_drops{0};
+    std::atomic<uint64_t> dequeued{0};
+    std::atomic<uint64_t> published{0};
+    std::atomic<uint64_t> publish_invalid{0};
+    std::atomic<uint64_t> queue_depth{0};
+    std::atomic<uint64_t> max_queue_depth{0};
+    std::atomic<uint64_t> enqueue_stamp_gap_max_ns{0};
+    std::atomic<uint64_t> publish_stamp_gap_max_ns{0};
+    std::atomic<uint64_t> publish_processing_max_ns{0};
+    std::atomic<uint64_t> last_enqueue_stamp_ns{0};
+    std::atomic<uint64_t> last_publish_stamp_ns{0};
+    std::atomic<uint64_t> start_steady_ns{0};
+};
+
+static cloud_path_diag_t g_cloud_diag;
+static std::mutex g_cloud_diag_log_mutex;
+
+uint64_t odin_cloud_diag_now_ns()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+}
+
+static void update_atomic_max(std::atomic<uint64_t> &target, uint64_t value)
+{
+    uint64_t current = target.load(std::memory_order_relaxed);
+    while (current < value &&
+           !target.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
+    }
+}
+
+static double ns_to_ms(uint64_t ns)
+{
+    return static_cast<double>(ns) / 1e6;
+}
+
+static double rate_from_counts(uint64_t count, uint64_t elapsed_ns)
+{
+    if (elapsed_ns == 0) {
+        return 0.0;
+    }
+    return static_cast<double>(count) * 1e9 / static_cast<double>(elapsed_ns);
+}
+
+static void odin_cloud_diag_reset()
+{
+    g_cloud_diag.sdk_callbacks.store(0, std::memory_order_relaxed);
+    g_cloud_diag.sdk_valid_frames.store(0, std::memory_order_relaxed);
+    g_cloud_diag.sdk_invalid_streams.store(0, std::memory_order_relaxed);
+    g_cloud_diag.sdk_invalid_clouds.store(0, std::memory_order_relaxed);
+    g_cloud_diag.enqueued.store(0, std::memory_order_relaxed);
+    g_cloud_diag.queue_drops.store(0, std::memory_order_relaxed);
+    g_cloud_diag.dequeued.store(0, std::memory_order_relaxed);
+    g_cloud_diag.published.store(0, std::memory_order_relaxed);
+    g_cloud_diag.publish_invalid.store(0, std::memory_order_relaxed);
+    g_cloud_diag.queue_depth.store(0, std::memory_order_relaxed);
+    g_cloud_diag.max_queue_depth.store(0, std::memory_order_relaxed);
+    g_cloud_diag.enqueue_stamp_gap_max_ns.store(0, std::memory_order_relaxed);
+    g_cloud_diag.publish_stamp_gap_max_ns.store(0, std::memory_order_relaxed);
+    g_cloud_diag.publish_processing_max_ns.store(0, std::memory_order_relaxed);
+    g_cloud_diag.last_enqueue_stamp_ns.store(0, std::memory_order_relaxed);
+    g_cloud_diag.last_publish_stamp_ns.store(0, std::memory_order_relaxed);
+    g_cloud_diag.start_steady_ns.store(odin_cloud_diag_now_ns(), std::memory_order_relaxed);
+}
+
+static void odin_cloud_diag_record_sdk_callback()
+{
+    g_cloud_diag.sdk_callbacks.fetch_add(1, std::memory_order_relaxed);
+}
+
+static void odin_cloud_diag_record_valid_frame()
+{
+    g_cloud_diag.sdk_valid_frames.fetch_add(1, std::memory_order_relaxed);
+}
+
+static void odin_cloud_diag_record_invalid_stream()
+{
+    g_cloud_diag.sdk_invalid_streams.fetch_add(1, std::memory_order_relaxed);
+}
+
+static void odin_cloud_diag_record_invalid_cloud()
+{
+    g_cloud_diag.sdk_invalid_clouds.fetch_add(1, std::memory_order_relaxed);
+}
+
+static void odin_cloud_diag_record_enqueue(uint64_t sensor_timestamp_ns, size_t queue_depth)
+{
+    g_cloud_diag.enqueued.fetch_add(1, std::memory_order_relaxed);
+    g_cloud_diag.queue_depth.store(queue_depth, std::memory_order_relaxed);
+    update_atomic_max(g_cloud_diag.max_queue_depth, static_cast<uint64_t>(queue_depth));
+
+    const uint64_t previous_stamp =
+        g_cloud_diag.last_enqueue_stamp_ns.exchange(sensor_timestamp_ns, std::memory_order_relaxed);
+    if (previous_stamp > 0 && sensor_timestamp_ns > previous_stamp) {
+        update_atomic_max(g_cloud_diag.enqueue_stamp_gap_max_ns, sensor_timestamp_ns - previous_stamp);
+    }
+}
+
+static void odin_cloud_diag_record_queue_drop()
+{
+    g_cloud_diag.queue_drops.fetch_add(1, std::memory_order_relaxed);
+}
+
+static void odin_cloud_diag_record_dequeue(size_t queue_depth)
+{
+    g_cloud_diag.dequeued.fetch_add(1, std::memory_order_relaxed);
+    g_cloud_diag.queue_depth.store(queue_depth, std::memory_order_relaxed);
+}
+
+void odin_cloud_diag_record_publish_invalid()
+{
+    g_cloud_diag.publish_invalid.fetch_add(1, std::memory_order_relaxed);
+}
+
+void odin_cloud_diag_record_publish(uint64_t sensor_timestamp_ns, uint64_t processing_duration_ns)
+{
+    g_cloud_diag.published.fetch_add(1, std::memory_order_relaxed);
+    update_atomic_max(g_cloud_diag.publish_processing_max_ns, processing_duration_ns);
+
+    const uint64_t previous_stamp =
+        g_cloud_diag.last_publish_stamp_ns.exchange(sensor_timestamp_ns, std::memory_order_relaxed);
+    if (previous_stamp > 0 && sensor_timestamp_ns > previous_stamp) {
+        update_atomic_max(g_cloud_diag.publish_stamp_gap_max_ns, sensor_timestamp_ns - previous_stamp);
+    }
+}
+
+static void odin_cloud_diag_emit(bool final_report)
+{
+    static uint64_t last_report_ns = 0;
+    static uint64_t last_sdk_callbacks = 0;
+    static uint64_t last_enqueued = 0;
+    static uint64_t last_dequeued = 0;
+    static uint64_t last_published = 0;
+    static uint64_t last_queue_drops = 0;
+
+    const uint64_t now_ns = odin_cloud_diag_now_ns();
+    std::lock_guard<std::mutex> lock(g_cloud_diag_log_mutex);
+    if (!final_report && last_report_ns > 0 && now_ns - last_report_ns < 10000000000ULL) {
+        return;
+    }
+
+    const uint64_t start_ns = g_cloud_diag.start_steady_ns.load(std::memory_order_relaxed);
+    const uint64_t elapsed_ns = (start_ns > 0 && now_ns > start_ns) ? now_ns - start_ns : 0;
+    const uint64_t window_ns = (last_report_ns > 0 && now_ns > last_report_ns) ? now_ns - last_report_ns : elapsed_ns;
+
+    const uint64_t sdk_callbacks = g_cloud_diag.sdk_callbacks.load(std::memory_order_relaxed);
+    const uint64_t sdk_valid_frames = g_cloud_diag.sdk_valid_frames.load(std::memory_order_relaxed);
+    const uint64_t sdk_invalid_streams = g_cloud_diag.sdk_invalid_streams.load(std::memory_order_relaxed);
+    const uint64_t sdk_invalid_clouds = g_cloud_diag.sdk_invalid_clouds.load(std::memory_order_relaxed);
+    const uint64_t enqueued = g_cloud_diag.enqueued.load(std::memory_order_relaxed);
+    const uint64_t queue_drops = g_cloud_diag.queue_drops.load(std::memory_order_relaxed);
+    const uint64_t dequeued = g_cloud_diag.dequeued.load(std::memory_order_relaxed);
+    const uint64_t published = g_cloud_diag.published.load(std::memory_order_relaxed);
+    const uint64_t publish_invalid = g_cloud_diag.publish_invalid.load(std::memory_order_relaxed);
+    const uint64_t queue_depth = g_cloud_diag.queue_depth.load(std::memory_order_relaxed);
+    const uint64_t max_queue_depth = g_cloud_diag.max_queue_depth.load(std::memory_order_relaxed);
+    const uint64_t enqueue_gap_max_ns = g_cloud_diag.enqueue_stamp_gap_max_ns.load(std::memory_order_relaxed);
+    const uint64_t publish_gap_max_ns = g_cloud_diag.publish_stamp_gap_max_ns.load(std::memory_order_relaxed);
+    const uint64_t processing_max_ns = g_cloud_diag.publish_processing_max_ns.load(std::memory_order_relaxed);
+
+    const double sdk_rate = rate_from_counts(sdk_callbacks, elapsed_ns);
+    const double enqueue_rate = rate_from_counts(enqueued, elapsed_ns);
+    const double publish_rate = rate_from_counts(published, elapsed_ns);
+    const double sdk_window_rate = rate_from_counts(sdk_callbacks - last_sdk_callbacks, window_ns);
+    const double enqueue_window_rate = rate_from_counts(enqueued - last_enqueued, window_ns);
+    const double dequeue_window_rate = rate_from_counts(dequeued - last_dequeued, window_ns);
+    const double publish_window_rate = rate_from_counts(published - last_published, window_ns);
+    const uint64_t window_queue_drops = queue_drops - last_queue_drops;
+
+#ifdef ROS2
+    RCLCPP_INFO(
+        rclcpp::get_logger("cloud_path_diag"),
+        "%s cloud path: sdk=%lu valid=%lu enq=%lu deq=%lu pub=%lu drop=%lu invalid_stream=%lu invalid_cloud=%lu pub_invalid=%lu "
+        "rates_total sdk/enq/pub=%.3f/%.3f/%.3f Hz rates_window sdk/enq/deq/pub=%.3f/%.3f/%.3f/%.3f Hz window_drop=%lu "
+        "queue_depth=%lu max_queue_depth=%lu max_stamp_gap enq/pub=%.3f/%.3f ms max_publish_processing=%.3f ms",
+        final_report ? "final" : "periodic",
+        sdk_callbacks, sdk_valid_frames, enqueued, dequeued, published, queue_drops,
+        sdk_invalid_streams, sdk_invalid_clouds, publish_invalid,
+        sdk_rate, enqueue_rate, publish_rate,
+        sdk_window_rate, enqueue_window_rate, dequeue_window_rate, publish_window_rate,
+        window_queue_drops, queue_depth, max_queue_depth,
+        ns_to_ms(enqueue_gap_max_ns), ns_to_ms(publish_gap_max_ns), ns_to_ms(processing_max_ns));
+#else
+    ROS_INFO(
+        "%s cloud path: sdk=%lu valid=%lu enq=%lu deq=%lu pub=%lu drop=%lu invalid_stream=%lu invalid_cloud=%lu pub_invalid=%lu "
+        "rates_total sdk/enq/pub=%.3f/%.3f/%.3f Hz rates_window sdk/enq/deq/pub=%.3f/%.3f/%.3f/%.3f Hz window_drop=%lu "
+        "queue_depth=%lu max_queue_depth=%lu max_stamp_gap enq/pub=%.3f/%.3f ms max_publish_processing=%.3f ms",
+        final_report ? "final" : "periodic",
+        sdk_callbacks, sdk_valid_frames, enqueued, dequeued, published, queue_drops,
+        sdk_invalid_streams, sdk_invalid_clouds, publish_invalid,
+        sdk_rate, enqueue_rate, publish_rate,
+        sdk_window_rate, enqueue_window_rate, dequeue_window_rate, publish_window_rate,
+        window_queue_drops, queue_depth, max_queue_depth,
+        ns_to_ms(enqueue_gap_max_ns), ns_to_ms(publish_gap_max_ns), ns_to_ms(processing_max_ns));
+#endif
+
+    last_report_ns = now_ns;
+    last_sdk_callbacks = sdk_callbacks;
+    last_enqueued = enqueued;
+    last_dequeued = dequeued;
+    last_published = published;
+    last_queue_drops = queue_drops;
+}
+
 // Image (RGB) dedicated processing thread — avoids blocking lidar_data_callback
 struct image_frame_t {
     std::vector<uint8_t> jpeg_data;
@@ -769,6 +979,7 @@ void clear_all_queues() {
         while (!g_cloud_queue.empty()) {
             g_cloud_queue.pop();
         }
+        g_cloud_diag.queue_depth.store(0, std::memory_order_relaxed);
     }
     // Clear image queue
     {
@@ -907,7 +1118,9 @@ static void cloud_thread_routine()
         if (!g_cloud_queue.empty() && g_cloud_thread_running) {
             cloud_frame_t frame = std::move(g_cloud_queue.front());
             g_cloud_queue.pop();
+            const size_t queue_depth_after_pop = g_cloud_queue.size();
             lock.unlock();
+            odin_cloud_diag_record_dequeue(queue_depth_after_pop);
 
             // Reconstruct capture_Image_List_t for the existing publish function
             if (g_ros_object && g_senddtof) {
@@ -944,6 +1157,8 @@ static void cloud_thread_routine()
 
                 g_ros_object->publishGrayUInt8(&gray_stream, 2);
             }
+
+            odin_cloud_diag_emit(false);
         }
     }
 
@@ -961,6 +1176,7 @@ static void start_cloud_thread()
         if (g_cloud_thread.joinable()) {
             g_cloud_thread.join();
         }
+        odin_cloud_diag_reset();
         g_cloud_thread_running = true;
         g_cloud_thread = std::thread(cloud_thread_routine);
 #ifdef ROS2
@@ -980,11 +1196,13 @@ static void stop_cloud_thread()
         if (g_cloud_thread.joinable()) {
             g_cloud_thread.join();
         }
+        odin_cloud_diag_emit(true);
 
         std::lock_guard<std::mutex> lock(g_cloud_queue_mutex);
         while (!g_cloud_queue.empty()) {
             g_cloud_queue.pop();
         }
+        g_cloud_diag.queue_depth.store(0, std::memory_order_relaxed);
 
 #ifdef ROS2
         RCLCPP_INFO(rclcpp::get_logger("cloud_thread"), "Cloud thread stopped");
@@ -1166,12 +1384,14 @@ static void lidar_data_callback(const lidar_data_t *data, void *user_data)
             update_count(&imu_rx_fps);
             break;
         case LIDAR_DT_RAW_DTOF:
+            odin_cloud_diag_record_sdk_callback();
             if (g_senddtof || g_pub_intensity_gray) {
                 // Enqueue cloud for dedicated thread processing
                 const capture_Image_List_t *cloud_stream = (capture_Image_List_t *)&data->stream;
                 if (cloud_stream->imageCount >= 2) {
                     const buffer_List_t &cloud_buf = cloud_stream->imageList[1];
                     if (cloud_buf.pAddr && cloud_buf.width > 0 && cloud_buf.height > 0) {
+                        odin_cloud_diag_record_valid_frame();
                         cloud_frame_t frame;
                         frame.width = cloud_buf.width;
                         frame.height = cloud_buf.height;
@@ -1208,11 +1428,18 @@ static void lidar_data_callback(const lidar_data_t *data, void *user_data)
                             std::lock_guard<std::mutex> lock(g_cloud_queue_mutex);
                             if (g_cloud_queue.size() >= CLOUD_QUEUE_MAX_SIZE) {
                                 g_cloud_queue.pop();
+                                odin_cloud_diag_record_queue_drop();
                             }
+                            const uint64_t frame_timestamp = frame.timestamp;
                             g_cloud_queue.push(std::move(frame));
+                            odin_cloud_diag_record_enqueue(frame_timestamp, g_cloud_queue.size());
                         }
                         g_cloud_queue_cv.notify_one();
+                    } else {
+                        odin_cloud_diag_record_invalid_cloud();
                     }
+                } else {
+                    odin_cloud_diag_record_invalid_stream();
                 }
             }
             update_count(&dtof_rx_fps);

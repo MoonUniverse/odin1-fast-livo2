@@ -100,6 +100,13 @@ pcd_save:
   colmap_output_en: false
   filter_size_pcd: 0.15
   interval: -1
+  trigger_mode: pose_delta
+  final_map_save_en: true
 image_save:
   img_save_en: false
   interval: 1
+  trigger_mode: pose_delta
+save_pose_gate:
+  translation_m: 0.2
+  rotation_deg: 10.0
+  min_interval_s: 0.0
