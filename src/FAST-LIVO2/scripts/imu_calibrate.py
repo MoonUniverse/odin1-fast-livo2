@@ -136,6 +136,14 @@ def calibrate_axis(taus, sigmas, label):
     return N, K, brw_ok
 
 
+def mean_resolved(values: np.ndarray, resolved_mask):
+    """Return the mean of values whose corresponding mask entry is true."""
+    mask = np.array(resolved_mask, dtype=bool)
+    if not np.any(mask):
+        return None
+    return float(np.mean(values[mask]))
+
+
 def plot_allan(gyro_data, accel_data, dt, output_path):
     """Generate and save Allan deviation log-log plots."""
     try:
@@ -257,20 +265,22 @@ def main():
         taus_a, sigmas_a = allan_variance(accel_data[:, i], dt)
 
         if len(taus_g) >= 3:
-            gyro_N[i], gyro_K[i], gyro_brw_ok[i] = calibrate_axis(taus_g, sigmas_g, f"Gyr {label}")
+            gyro_N[i], gyro_K_axis, gyro_brw_ok[i] = calibrate_axis(taus_g, sigmas_g, f"Gyr {label}")
+            gyro_K[i] = gyro_K_axis if gyro_brw_ok[i] else 0.0
         else:
             gyro_N[i] = gyro_K[i] = 0.0
 
         if len(taus_a) >= 3:
-            accel_N[i], accel_K[i], accel_brw_ok[i] = calibrate_axis(taus_a, sigmas_a, f"Acc {label}")
+            accel_N[i], accel_K_axis, accel_brw_ok[i] = calibrate_axis(taus_a, sigmas_a, f"Acc {label}")
+            accel_K[i] = accel_K_axis if accel_brw_ok[i] else 0.0
         else:
             accel_N[i] = accel_K[i] = 0.0
 
     # Mean values across axes
     N_gyr_mean = float(np.mean(gyro_N))
     N_acc_mean = float(np.mean(accel_N))
-    K_gyr_mean = float(np.mean(gyro_K)) if any(gyro_brw_ok) else None
-    K_acc_mean = float(np.mean(accel_K)) if any(accel_brw_ok) else None
+    K_gyr_mean = mean_resolved(gyro_K, gyro_brw_ok)
+    K_acc_mean = mean_resolved(accel_K, accel_brw_ok)
 
     # Map to FAST-LIVO2 config: cov_config = N² * fs (see plan for derivation)
     gyr_cov = N_gyr_mean ** 2 * fs

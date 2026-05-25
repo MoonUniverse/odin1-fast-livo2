@@ -294,6 +294,50 @@ common:
   img_qos_reliable: false
 ```
 
+## Odin IMU Calibration
+
+Start the Odin driver in IMU-only mode:
+
+```bash
+ros2 launch odin_ros_driver odin1_imu_only_ros2.launch.py
+```
+
+This disables RGB, DTOF cloud, odom, cloud_slam, cloud_render, recorddata,
+devstatus logging, and image outputs. The driver also creates ROS publishers
+according to these switches, so only `/odin1/imu` should be advertised and
+publishing.
+
+Record static Odin IMU data in another terminal while the device is motionless:
+
+```bash
+ros2 run fast_livo record_imu_static.py \
+  --topic /odin1/imu \
+  --duration 7200 \
+  --output /tmp/odin_imu_static.txt
+```
+
+Run Allan variance calibration:
+
+```bash
+ros2 run fast_livo imu_calibrate.py \
+  --input /tmp/odin_imu_static.txt \
+  --plot \
+  --plot-output /tmp/odin_allan_deviation.png
+```
+
+Apply resolved parameters to `config/odin.yaml`:
+
+```bash
+ros2 run fast_livo imu_calibrate.py \
+  --input /tmp/odin_imu_static.txt \
+  --update-config /home/alienware/livo_workspace/src/FAST-LIVO2/config/odin.yaml
+```
+
+Short recordings can give usable `acc_cov` and `gyr_cov`; use one to two hours
+or longer for reliable `b_acc_cov` and `b_gyr_cov`. If a bias random walk axis
+is unresolved, the calibration script reports it as `unresolved` and excludes
+that axis from the mean instead of averaging in zero.
+
 ## DDS Comparison Summary
 
 Tested with `Bright_Screen_Wall_Ros2`:

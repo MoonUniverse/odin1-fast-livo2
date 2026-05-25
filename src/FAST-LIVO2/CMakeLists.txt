@@ -131,6 +131,7 @@ install(TARGETS
 )
 
 install(PROGRAMS
+  scripts/imu_calibrate.py
   scripts/record_imu_static.py
   DESTINATION lib/${PROJECT_NAME}
 )

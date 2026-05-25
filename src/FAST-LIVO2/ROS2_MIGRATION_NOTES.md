@@ -242,6 +242,60 @@ common:
   img_qos_reliable: false
 ```
 
+## Odin IMU Calibration
+
+Two helper scripts are included for static IMU noise calibration:
+
+- `FAST-LIVO2/scripts/record_imu_static.py`: records `/odin1/imu` as text with
+  columns `t gx gy gz ax ay az`.
+- `FAST-LIVO2/scripts/imu_calibrate.py`: runs Allan variance analysis and prints
+  FAST-LIVO2 `imu` config values.
+
+For calibration, start the Odin driver in IMU-only mode:
+
+```bash
+ros2 launch odin_ros_driver odin1_imu_only_ros2.launch.py
+```
+
+This launch uses `control_command_imu_only.yaml`, where RGB, DTOF cloud, odom,
+cloud_slam, cloud_render, recorddata, devstatus logging, and image outputs are
+disabled. The driver also creates ROS publishers according to these switches,
+so only `/odin1/imu` should be advertised and publishing.
+
+In another terminal, record with:
+
+```bash
+ros2 run fast_livo record_imu_static.py \
+  --topic /odin1/imu \
+  --duration 7200 \
+  --output /tmp/odin_imu_static.txt
+```
+
+Keep the Odin sensor still on a stable surface during recording. A short
+recording can estimate white noise (`acc_cov`, `gyr_cov`), but bias random walk
+(`b_acc_cov`, `b_gyr_cov`) usually needs one to two hours or longer.
+
+Run calibration:
+
+```bash
+ros2 run fast_livo imu_calibrate.py \
+  --input /tmp/odin_imu_static.txt \
+  --plot \
+  --plot-output /tmp/odin_allan_deviation.png
+```
+
+To update the Odin FAST-LIVO2 config directly:
+
+```bash
+ros2 run fast_livo imu_calibrate.py \
+  --input /tmp/odin_imu_static.txt \
+  --update-config /home/alienware/livo_workspace/src/FAST-LIVO2/config/odin.yaml
+```
+
+The calibration script only averages bias random walk values from axes where
+the Allan curve contains a resolved `+1/2` slope region. Unresolved axes are
+reported as `unresolved` and are not mixed into the mean as zero.
+
 ## Environment Limitations Seen Here
 
 The sandbox/workspace environment has restrictions that are not code defects:

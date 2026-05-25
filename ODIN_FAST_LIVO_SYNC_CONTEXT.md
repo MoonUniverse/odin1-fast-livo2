@@ -193,6 +193,29 @@ source install/setup.bash
 ros2 launch fast_livo mapping_odin.launch.py rviz:=false
 ```
 
+## IMU Calibration Runtime
+
+For static IMU calibration, use the Odin IMU-only driver launch:
+
+```bash
+cd /home/alienware/livo_workspace
+source install/setup.bash
+ros2 launch odin_ros_driver odin1_imu_only_ros2.launch.py
+```
+
+It uses `control_command_imu_only.yaml`, with RGB, DTOF cloud, odom,
+cloud_slam, cloud_render, recorddata, devstatus logging, and image outputs
+disabled. The driver also creates ROS publishers according to these switches,
+so only `/odin1/imu` should be advertised and publishing.
+
+Record static data from another terminal:
+
+```bash
+cd /home/alienware/livo_workspace
+source install/setup.bash
+ros2 run fast_livo record_imu_static.py --topic /odin1/imu --duration 7200 --output /tmp/odin_imu_static.txt
+```
+
 ## Recorddata Handling
 
 - FAST-LIVO optimized config uses `recorddata: 0`.

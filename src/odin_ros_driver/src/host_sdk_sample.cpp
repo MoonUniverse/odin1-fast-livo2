@@ -1403,8 +1403,9 @@ static void lidar_data_callback(const lidar_data_t *data, void *user_data)
             break;
             case LIDAR_DT_SLAM_WIWC:
             {
-                // Always publish WIWC data for real-time extrinsics
-                g_ros_object->publishWiwc((capture_Image_List_t *)&data->stream);
+                if (g_sendodom || g_custom_map_mode == 2) {
+                    g_ros_object->publishWiwc((capture_Image_List_t *)&data->stream);
+                }
                 
                 if(g_record_data ) {
                     g_ros_object->recordrotate((capture_Image_List_t *)&data->stream);
@@ -2107,11 +2108,9 @@ int main(int argc, char *argv[])
     rclcpp::NodeOptions node_options;
     node_options.automatically_declare_parameters_from_overrides(true);
     auto node = std::make_shared<rclcpp::Node>("lydros_node", node_options);
-    g_ros_object = std::make_shared<MultiSensorPublisher>(node);
 #else
     ros::init(argc, argv, "lydros_node");
     ros::NodeHandle nh;
-    g_ros_object = new MultiSensorPublisher(nh);
 #endif
 
     // Register signal handlers for Ctrl+C
@@ -2204,6 +2203,12 @@ int main(int argc, char *argv[])
         g_send_image_mask = get_key_value("sendimagemask", 0);
         g_reset_algo = get_key_value("resetalgo", 0);
         g_custom_map_mode = g_parser->getCustomMapMode(2);
+
+        #ifdef ROS2
+            g_ros_object = std::make_shared<MultiSensorPublisher>(node);
+        #else
+            g_ros_object = new MultiSensorPublisher(nh);
+        #endif
 
         lidar_log_set_level(LIDAR_LOG_INFO);
 

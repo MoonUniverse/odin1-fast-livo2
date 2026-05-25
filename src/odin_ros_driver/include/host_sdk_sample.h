@@ -69,10 +69,19 @@ enum class OdometryType {
 
 
 extern int g_log_level;
+extern int g_sendrgb;
+extern int g_sendimu;
+extern int g_senddtof;
+extern int g_sendodom;
 extern int g_sendcloudrender;
+extern int g_sendcloudslam;
 extern int g_sendrgb_raw;
 extern int g_sendrgb_compressed;
 extern int g_sendrgb_undistort;
+extern int g_pub_intensity_gray;
+extern int g_show_path;
+extern int g_show_camerapose;
+extern int g_custom_map_mode;
 extern int g_use_host_ros_time;
 double get_ptp_smoothed_delay();
 double get_ptp_smoothed_offset();
@@ -1673,6 +1682,21 @@ private:
 
     void initialize_publishers() {
         #ifdef ROS2
+            imu_pub_.reset();
+            rgb_pub_.reset();
+            cloud_pub_.reset();
+            xyzrgbacloud_pub_.reset();
+            odom_publisher_.reset();
+            odom_highfreq_publisher_.reset();
+            path_publisher_.reset();
+            pub_camera_pose_visual_.reset();
+            rgbcloud_pub_.reset();
+            compressed_rgb_pub_.reset();
+            undistort_rgb_pub_.reset();
+            intensity_gray_pub_.reset();
+            wiwc_publisher_.reset();
+            tf_broadcaster.reset();
+
             // Small data with queue depth 1
             auto qos_small = rclcpp::QoS(1)
                                     .reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE)
@@ -1683,20 +1707,24 @@ private:
                                     .reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE)
                                     .durability(RMW_QOS_POLICY_DURABILITY_VOLATILE);
 
-            imu_pub_ = node_->create_publisher<ros::Imu>("odin1/imu", qos_small);
-            rgb_pub_ = node_->create_publisher<ros::Image>("odin1/image", qos_sensor);
-            cloud_pub_ = node_->create_publisher<ros::PointCloud2>("odin1/cloud_raw", qos_sensor);
-            xyzrgbacloud_pub_ = node_->create_publisher<ros::PointCloud2>("odin1/cloud_slam", qos_sensor);
-            odom_publisher_ = node_->create_publisher<ros::Odometry>("odin1/odometry", qos_small);
-            odom_highfreq_publisher_ = node_->create_publisher<ros::Odometry>("odin1/odometry_highfreq", qos_small);
-            path_publisher_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>("odin1/path", qos_sensor);
-            pub_camera_pose_visual_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>("odin1/camera_pose_visual", qos_sensor);
-            rgbcloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("odin1/cloud_render", qos_sensor);
-            compressed_rgb_pub_ = node_->create_publisher<sensor_msgs::msg::CompressedImage>("odin1/image/compressed", qos_small);
-            undistort_rgb_pub_ = node_->create_publisher<sensor_msgs::msg::Image>("odin1/image/undistorted", qos_sensor);
-            intensity_gray_pub_ = node_->create_publisher<sensor_msgs::msg::Image>("odin1/image/intensity_gray", qos_sensor);
-            wiwc_publisher_ = node_->create_publisher<ros::Odometry>("odin1/wiwc", qos_small);
-            tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(node_);
+            if (g_sendimu) imu_pub_ = node_->create_publisher<ros::Imu>("odin1/imu", qos_small);
+            if (g_sendrgb && g_sendrgb_raw) rgb_pub_ = node_->create_publisher<ros::Image>("odin1/image", qos_sensor);
+            if (g_senddtof) cloud_pub_ = node_->create_publisher<ros::PointCloud2>("odin1/cloud_raw", qos_sensor);
+            if (g_sendcloudslam) xyzrgbacloud_pub_ = node_->create_publisher<ros::PointCloud2>("odin1/cloud_slam", qos_sensor);
+            if (g_sendodom) {
+                odom_publisher_ = node_->create_publisher<ros::Odometry>("odin1/odometry", qos_small);
+                odom_highfreq_publisher_ = node_->create_publisher<ros::Odometry>("odin1/odometry_highfreq", qos_small);
+            }
+            if (g_sendodom && g_show_path) path_publisher_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>("odin1/path", qos_sensor);
+            if (g_sendodom && g_show_camerapose) pub_camera_pose_visual_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>("odin1/camera_pose_visual", qos_sensor);
+            if (g_sendcloudrender) rgbcloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("odin1/cloud_render", qos_sensor);
+            if (g_sendrgb && g_sendrgb_compressed) compressed_rgb_pub_ = node_->create_publisher<sensor_msgs::msg::CompressedImage>("odin1/image/compressed", qos_small);
+            if (g_sendrgb && g_sendrgb_undistort) undistort_rgb_pub_ = node_->create_publisher<sensor_msgs::msg::Image>("odin1/image/undistorted", qos_sensor);
+            if (g_pub_intensity_gray) intensity_gray_pub_ = node_->create_publisher<sensor_msgs::msg::Image>("odin1/image/intensity_gray", qos_sensor);
+            if (g_sendodom || g_custom_map_mode == 2) {
+                wiwc_publisher_ = node_->create_publisher<ros::Odometry>("odin1/wiwc", qos_small);
+                tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(node_);
+            }
         #endif
     }
     #ifdef ROS1
