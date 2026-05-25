@@ -24,6 +24,8 @@ using namespace std;
 using namespace Eigen;
 using namespace Sophus;
 
+inline bool g_fast_livo_verbose = false;
+
 #define print_line std::cout << __FILE__ << ", " << __LINE__ << std::endl;
 #define G_m_s2 (9.81)   // Gravaty const in GuangDong/China
 #define DIM_STATE (19)  // Dimension of states (Let Dim(SO(3)) = 3)

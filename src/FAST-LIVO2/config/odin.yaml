@@ -2,6 +2,7 @@ common:
   img_topic: /odin1/image/undistorted
   lid_topic: /odin1/cloud_raw
   imu_topic: /odin1/imu
+  verbose: false
   img_en: 1
   lidar_en: 1
   lidar_qos_reliable: true

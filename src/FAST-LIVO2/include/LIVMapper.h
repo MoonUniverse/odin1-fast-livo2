@@ -103,6 +103,7 @@ public:
 
   bool lidar_map_inited = false, pcd_save_en = false, img_save_en = false, pub_effect_point_en = false, pose_output_en = false, ros_driver_fix_en = false, hilti_en = false;
   bool final_map_save_en = false;
+  bool verbose_log_en = false;
   int img_save_interval = 1, pcd_save_interval = -1, pcd_save_type = 0;
   string pcd_save_trigger_mode = "interval", img_save_trigger_mode = "interval";
   double save_pose_translation_m = 0.2, save_pose_rotation_deg = 10.0, save_pose_min_interval_s = 0.0;

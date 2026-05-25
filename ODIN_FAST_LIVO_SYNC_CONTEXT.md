@@ -735,3 +735,84 @@ Conclusion:
 - Reliable lidar QoS fixes the FAST-LIVO2 cloud callback drop.
 - `/odin1/cloud_raw` callback frequency now matches the driver and image cadence.
 - The previous `~195 ms` cloud header p95 gap is gone; cloud header p95 is now about `97.52 ms`.
+
+## 2026-05-25 Runtime Log Noise Reduction
+
+Implemented after cloud QoS stabilization.
+
+FAST-LIVO2 changes:
+
+- Added `common.verbose` config parameter.
+- Added a shared `g_fast_livo_verbose` flag in `common_lib.h`.
+- Odin config sets:
+
+```yaml
+common:
+  verbose: false
+```
+
+With `verbose: false`, the following high-frequency frame logs are suppressed:
+
+- `Get image, its header time`
+- `Get LiDAR, its header time`
+- `[ LIO ] Raw feature num`
+- `[ VIO ] Raw feature num`
+- `[ LIO ] Update Voxel Map`
+- `[ LIO ]: No point!!!`
+- `[ VIO ] No point!!!`
+- VIO/LIO timing tables
+- visual sparse map retrieve/append/update counts
+
+Odin driver change:
+
+- Removed periodic `cloud_path_diag` emission from the cloud thread.
+- `cloud_path_diag` final summary remains available at cloud thread shutdown.
+- Downgraded `Software connection successful...` and `Device ready and streams activated`
+  from INFO to DEBUG.
+
+Changed files:
+
+- `src/FAST-LIVO2/config/odin.yaml`
+- `src/FAST-LIVO2/include/common_lib.h`
+- `src/FAST-LIVO2/include/LIVMapper.h`
+- `src/FAST-LIVO2/src/LIVMapper.cpp`
+- `src/FAST-LIVO2/src/vio.cpp`
+- `src/FAST-LIVO2/src/voxel_map.cpp`
+- `src/odin_ros_driver/src/host_sdk_sample.cpp`
+
+Local build verification:
+
+```bash
+source install/setup.bash
+colcon build --packages-select odin_ros_driver fast_livo --cmake-args -DCMAKE_BUILD_TYPE=Release
+```
+
+Build passed. Only existing warnings were observed.
+
+NUC build verification:
+
+```bash
+cd /home/nuc13/livo_workspace
+source /opt/ros/humble/setup.bash
+env PATH=/usr/bin:/bin:/opt/ros/humble/bin:/usr/local/bin \
+  colcon build --packages-select odin_ros_driver fast_livo \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+Build passed.
+
+NUC short quiet-run check:
+
+```text
+/tmp/odin_quiet_test_20260525.log
+/tmp/fast_livo_quiet_test_20260525.log
+/tmp/fast_livo_topic_reports/fast_livo_internal_report_20260525_163659.md
+```
+
+Result:
+
+- No `cloud_path_diag` periodic lines appeared in the Odin driver log.
+- No FAST-LIVO2 `Get image`, LIO/VIO timing table, raw feature count, or visual
+  map retrieve/append/update frame logs appeared.
+- 30 second FAST-LIVO2 log was reduced to 22 lines, mostly launch, initialization,
+  shutdown, and final save/report messages.

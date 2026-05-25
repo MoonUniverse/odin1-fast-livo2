@@ -1157,8 +1157,6 @@ static void cloud_thread_routine()
 
                 g_ros_object->publishGrayUInt8(&gray_stream, 2);
             }
-
-            odin_cloud_diag_emit(false);
         }
     }
 
@@ -2282,13 +2280,13 @@ static void lidar_device_callback(const lidar_device_info_t* device, bool attach
         }
 
         #ifdef ROS2
-            RCLCPP_INFO(rclcpp::get_logger("device_cb"), "Software connection successful in %ld seconds", 
+            RCLCPP_DEBUG(rclcpp::get_logger("device_cb"), "Software connection successful in %ld seconds",
                        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - software_connect_start).count());
-            RCLCPP_INFO(rclcpp::get_logger("device_cb"), "Device ready and streams activated");
+            RCLCPP_DEBUG(rclcpp::get_logger("device_cb"), "Device ready and streams activated");
         #else
-            ROS_INFO("Software connection successful in %ld seconds", 
+            ROS_DEBUG("Software connection successful in %ld seconds",
                     std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - software_connect_start).count());
-            ROS_INFO("Device ready and streams activated");
+            ROS_DEBUG("Device ready and streams activated");
         #endif
     } else {
         #ifdef ROS2
