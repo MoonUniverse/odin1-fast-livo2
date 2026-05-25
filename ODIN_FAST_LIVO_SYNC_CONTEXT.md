@@ -816,3 +816,240 @@ Result:
   map retrieve/append/update frame logs appeared.
 - 30 second FAST-LIVO2 log was reduced to 22 lines, mostly launch, initialization,
   shutdown, and final save/report messages.
+
+## 2026-05-25 Initial Version Completion Summary
+
+The initial Odin + FAST-LIVO2 integration version is considered complete.
+
+Completed Odin driver FAST-LIVO path:
+
+- FAST-LIVO optimized Odin driver launch/config is in place.
+- Required runtime topics are:
+  - `/odin1/imu`
+  - `/odin1/cloud_raw`
+  - `/odin1/image/undistorted`
+- Non-essential runtime load is disabled for FAST-LIVO:
+  - raw RGB image
+  - compressed RGB image
+  - cloud_slam
+  - cloud_render
+  - odom
+  - recorddata
+- Undistorted image is stable around `10.26 Hz`.
+- Driver cloud path instrumentation proved SDK callback, cloud queue, dequeue,
+  and publish paths are stable and do not drop cloud frames.
+
+Completed FAST-LIVO2 Odin support:
+
+- Added Odin lidar type:
+  - `ODIN = 8`
+- Added Odin `PointCloud2` parser for `/odin1/cloud_raw`.
+- FAST-LIVO2 Odin config uses:
+  - image: `/odin1/image/undistorted`
+  - lidar: `/odin1/cloud_raw`
+  - imu: `/odin1/imu`
+- `img_time_offset: 0.001685342` aligns image timestamps to cloud timestamps.
+- Camera/extrinsic config audit found no obvious Odin-specific config error.
+
+Critical cloud callback drop fix:
+
+- Root cause was QoS mismatch:
+  - Odin driver cloud publisher uses RELIABLE QoS.
+  - FAST-LIVO2 lidar subscriber previously used `SensorDataQoS()`, which requests
+    BEST_EFFORT reliability.
+- Fix:
+  - added FAST-LIVO2 lidar QoS parameters
+  - Odin config sets:
+
+```yaml
+common:
+  lidar_qos_reliable: true
+  lidar_queue_size: 50
+```
+
+- NUC13 validation after fix:
+  - `/odin1/cloud_raw`: `10.334 Hz`
+  - cloud header p95: `97.520 ms`
+  - previous cloud callback issue of about `8.19 Hz` and `195 ms` p95 header gap
+    is gone.
+
+Completed save and diagnostics support:
+
+- FAST-LIVO2 supports pose-gated PCD/image saving.
+- FAST-LIVO2 saves final accumulated maps at shutdown:
+  - `src/FAST-LIVO2/Log/pcd/final_map.pcd`
+  - `src/FAST-LIVO2/Log/pcd/final_map_rgb.pcd` when colored points exist
+- FAST-LIVO2 writes internal topic reports:
+  - `/tmp/fast_livo_topic_reports/fast_livo_internal_report_*.json`
+  - `/tmp/fast_livo_topic_reports/fast_livo_internal_report_*.md`
+- Use internal reports as source of truth for FAST-LIVO2 input callback rates.
+  External Python topic reports can undercount large image/cloud topics.
+
+Runtime log noise reduction:
+
+- FAST-LIVO2 has:
+
+```yaml
+common:
+  verbose: false
+```
+
+- With `verbose: false`, frame-level logs are suppressed:
+  - `Get image`
+  - `Get LiDAR`
+  - LIO/VIO timing tables
+  - raw feature counts
+  - visual map retrieve/append/update counts
+  - `No point` frame messages
+- Odin driver no longer emits periodic `cloud_path_diag`; shutdown final summary
+  remains available.
+- NUC13 30 second quiet-run FAST-LIVO2 log was reduced to 22 lines.
+
+Important commits:
+
+```text
+a5bce33 Add FAST-LIVO diagnostics and Odin cloud instrumentation
+75c5f59 Use reliable QoS for Odin cloud subscription
+4461723 Reduce Odin FAST-LIVO runtime logging
+```
+
+Repository hygiene note:
+
+- VS Code editor state is local-only:
+  - `src/.vscode/`
+- It is ignored by `.gitignore` and should not be committed.
+
+Recommended next phase:
+
+- Longer real-world runtime tests.
+- Evaluate trajectory and map quality.
+- Tune FAST-LIVO2 mapping/VIO parameters if quality issues appear.
+- Decide later whether to keep, gate further, or remove diagnostic code once the
+  integration is fully productionized.
+
+## 2026-05-25 GUI Control Panel and Recording Options
+
+Added a Tkinter desktop control package:
+
+- Package: `src/odin_livo_control`
+- Executable: `odin_livo_gui`
+- Intended NUC command:
+
+```bash
+cd /home/nuc13/livo_workspace
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run odin_livo_control odin_livo_gui
+```
+
+Control behavior:
+
+- `Start` launches Odin first:
+  - `ros2 launch odin_ros_driver odin1_fast_livo_ros2.launch.py`
+- GUI waits a fixed `10s` Odin warmup.
+- Then GUI launches FAST-LIVO2:
+  - `ros2 launch fast_livo mapping_odin.launch.py ...`
+- `Stop` sends SIGINT to Odin first, waits `2s`, then sends SIGINT to
+  FAST-LIVO2 so final map/report saving can complete.
+- FAST-LIVO2 gets up to `30s` graceful shutdown before stronger termination.
+
+Important design decision:
+
+- GUI no longer subscribes to `/odin1/imu`, `/odin1/cloud_raw`, or
+  `/odin1/image/undistorted` for startup health gating.
+- Reason: this document already records that external Python subscribers can
+  undercount large image/cloud topics and should not be used as source of truth.
+- Use FAST-LIVO2 internal reports under `/tmp/fast_livo_topic_reports/` for
+  real input callback rates.
+
+GUI runtime environment defaults:
+
+- `RMW_IMPLEMENTATION=rmw_fastrtps_cpp`
+- `ROS_DOMAIN_ID=33`
+- `ROS_LOCALHOST_ONLY=1`
+- `ROS_LOG_DIR=/tmp/ros-log`
+- Workspace auto-detection checks both:
+  - `/home/alienware/livo_workspace`
+  - `/home/nuc13/livo_workspace`
+- `ODIN_LIVO_WORKSPACE` can override the workspace path if needed.
+
+Added GUI recording options:
+
+- `FAST-LIVO2 PCD`
+  - passes `pcd_save:=true` into `mapping_odin.launch.py`
+  - enables `pcd_save.pcd_save_en`
+- `FAST-LIVO2 Image`
+  - passes `image_save:=true` into `mapping_odin.launch.py`
+  - enables `image_save.img_save_en`
+- `Odin Recorddata`
+  - does not edit the checked-in Odin YAML
+  - writes a per-run temporary config:
+    - `/tmp/odin_livo_control/<timestamp>/control_command_fast_livo_gui.yaml`
+  - sets only `register_keys.recorddata: 1`
+  - launches Odin with `config_file:=<temporary config>`
+
+Recording output locations follow existing node behavior:
+
+- FAST-LIVO2 PCD:
+  - `src/FAST-LIVO2/Log/pcd/`
+- FAST-LIVO2 Image:
+  - `src/FAST-LIVO2/Log/image/`
+- Odin recorddata:
+  - `src/odin_ros_driver/recorddata/`
+
+FAST-LIVO2 launch updates:
+
+- `src/FAST-LIVO2/launch/mapping_odin.launch.py` now exposes:
+  - `pcd_save` default `false`
+  - `image_save` default `false`
+- These launch arguments override runtime ROS parameters without changing
+  `config/odin.yaml` defaults.
+
+NUC13 synchronization and verification:
+
+```text
+nuc13@10.56.238.241:/home/nuc13/livo_workspace
+```
+
+Files synchronized to NUC for this GUI update:
+
+- `src/odin_livo_control/`
+- `src/FAST-LIVO2/launch/mapping_odin.launch.py`
+
+Verified on NUC:
+
+```bash
+cd /home/nuc13/livo_workspace
+source /opt/ros/humble/setup.bash
+env PATH=/usr/bin:/bin:/opt/ros/humble/bin:/usr/local/bin \
+  colcon build --packages-select odin_livo_control fast_livo \
+  --executor sequential \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+Also verified:
+
+```bash
+source install/setup.bash
+ROS_LOG_DIR=/tmp/ros-log ros2 launch fast_livo mapping_odin.launch.py --show-args
+ros2 pkg executables odin_livo_control
+```
+
+Expected launch args now include:
+
+```text
+pcd_save default: false
+image_save default: false
+```
+
+Expected executable:
+
+```text
+odin_livo_control odin_livo_gui
+```
+
+Repository hygiene:
+
+- `.gitignore` now ignores VS Code editor state with:
+  - `.vscode/`
+  - `**/.vscode/`

@@ -19,6 +19,8 @@ def generate_launch_description():
     rviz = LaunchConfiguration("rviz")
     topic_report = LaunchConfiguration("topic_report")
     topic_report_dir = LaunchConfiguration("topic_report_dir")
+    pcd_save = LaunchConfiguration("pcd_save")
+    image_save = LaunchConfiguration("image_save")
 
     config = os.path.join(pkg_share, "config", "odin.yaml")
     camera = os.path.join(pkg_share, "config", "camera_odin.yaml")
@@ -28,12 +30,21 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz", default_value="false"),
         DeclareLaunchArgument("topic_report", default_value="false"),
         DeclareLaunchArgument("topic_report_dir", default_value="/tmp/fast_livo_topic_reports"),
+        DeclareLaunchArgument("pcd_save", default_value="false"),
+        DeclareLaunchArgument("image_save", default_value="false"),
         Node(
             package="fast_livo",
             executable="fastlivo_mapping",
             name="laserMapping",
             output="screen",
-            parameters=[load_yaml(config), load_yaml(camera)],
+            parameters=[
+                load_yaml(config),
+                load_yaml(camera),
+                {
+                    "pcd_save.pcd_save_en": pcd_save,
+                    "image_save.img_save_en": image_save,
+                },
+            ],
         ),
         Node(
             package="rviz2",
