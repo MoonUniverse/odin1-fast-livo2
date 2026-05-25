@@ -116,6 +116,47 @@ Conclusion:
 - For FAST-LIVO2, `img_time_offset: 0.001685342` aligns image timestamps to cloud timestamps.
 - Motion did not materially affect topic frequency in the 5 minute test.
 
+### 2026-05-25 5 Minute Topic Stability Retest
+
+Measured for 300 seconds on:
+
+- `/odin1/imu`
+- `/odin1/cloud_raw`
+- `/odin1/image/undistorted`
+
+Results:
+
+- `/odin1/imu`: count `119845`, rate `399.551 Hz`, stamp p95 `2.546 ms`, stamp p99 `2.558 ms`
+- `/odin1/cloud_raw`: count `3077`, rate `10.260 Hz`, stamp p95 `97.518 ms`, stamp p99 `97.526 ms`
+- `/odin1/image/undistorted`: count `3077`, rate `10.259 Hz`, stamp p95 `97.518 ms`, stamp p99 `97.526 ms`, shape `1600x1296 bgr8`
+- cloud to nearest IMU abs p95 `1.186 ms`
+- image to nearest IMU abs p95 `1.189 ms`
+- image to nearest cloud abs p95 `1.685 ms`
+
+Conclusion:
+
+- The retest did not reproduce topic frequency instability.
+- Cloud and image counts were identical.
+- Header timestamps were stable; receive interval spikes looked like host/DDS
+  subscriber scheduling jitter.
+
+## FAST-LIVO2 Odin Config Audit
+
+Checked on 2026-05-25:
+
+- `mapping_odin.launch.py` loads `config/odin.yaml` and `config/camera_odin.yaml`.
+- Source and installed copies of the Odin launch/config files were identical.
+- Topics match the driver: `/odin1/imu`, `/odin1/cloud_raw`, `/odin1/image/undistorted`.
+- `preprocess.lidar_type: 8` selects `Preprocess::odin_handler()`.
+- `camera_odin.yaml` image size `1600x1296` matches the current undistorted image.
+- `scale: 0.5` is currently harmless because no resize occurs when the incoming
+  image already matches the camera model size.
+- `img_time_offset: 0.001685342` remains consistent with measured image/cloud
+  nearest-neighbor offset.
+- `Rcl` is near-orthonormal with determinant about `1.000002`.
+- `extrinsic_T` matches the Odin driver's fixed LiDAR-to-IMU translation.
+- No obvious Odin FAST-LIVO2 config error was found.
+
 ## Recommended FAST-LIVO2 Runtime
 
 ```bash
@@ -146,3 +187,29 @@ cd /home/alienware/livo_workspace
 source install/setup.bash
 ros2 run fast_livo record_imu_static.py --topic /odin1/imu --duration 7200 --output /tmp/odin_imu_static.txt
 ```
+
+## Commit and NUC Deployment
+
+Functional commit:
+
+```text
+1d21ef3 Add Odin IMU calibration workflow
+```
+
+Synchronized and built on:
+
+```text
+nuc13@10.56.238.241:/home/nuc13/livo_workspace
+```
+
+NUC build command:
+
+```bash
+cd /home/nuc13/livo_workspace
+source /opt/ros/humble/setup.bash
+env PATH=/usr/bin:/bin:/opt/ros/humble/bin:/usr/local/bin \
+  colcon build --packages-select livox_ros_driver2 vikit_common odin_ros_driver fast_livo \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+Build result: all four packages built successfully with only existing warnings.

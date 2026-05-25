@@ -296,6 +296,82 @@ The calibration script only averages bias random walk values from axes where
 the Allan curve contains a resolved `+1/2` slope region. Unresolved axes are
 reported as `unresolved` and are not mixed into the mean as zero.
 
+## Odin NUC Deployment State
+
+Current Odin/FAST-LIVO2 functional commit:
+
+```text
+1d21ef3 Add Odin IMU calibration workflow
+```
+
+It was synchronized to:
+
+```text
+nuc13@10.56.238.241:/home/nuc13/livo_workspace
+```
+
+The NUC build was verified with:
+
+```bash
+cd /home/nuc13/livo_workspace
+source /opt/ros/humble/setup.bash
+env PATH=/usr/bin:/bin:/opt/ros/humble/bin:/usr/local/bin \
+  colcon build --packages-select livox_ros_driver2 vikit_common odin_ros_driver fast_livo \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+Build result: `livox_ros_driver2`, `vikit_common`, `odin_ros_driver`, and
+`fast_livo` all built successfully. Only existing warnings were observed.
+
+Normal Odin + FAST-LIVO2 runtime on the NUC:
+
+```bash
+cd /home/nuc13/livo_workspace
+source install/setup.bash
+export ROS_LOG_DIR=/tmp/ros-log
+ros2 launch odin_ros_driver odin1_fast_livo_ros2.launch.py
+```
+
+```bash
+cd /home/nuc13/livo_workspace
+source install/setup.bash
+export ROS_LOG_DIR=/tmp/ros-log
+ros2 launch fast_livo mapping_odin.launch.py rviz:=false
+```
+
+IMU-only calibration runtime on the NUC:
+
+```bash
+cd /home/nuc13/livo_workspace
+source install/setup.bash
+export ROS_LOG_DIR=/tmp/ros-log
+ros2 launch odin_ros_driver odin1_imu_only_ros2.launch.py
+```
+
+```bash
+cd /home/nuc13/livo_workspace
+source install/setup.bash
+ros2 run fast_livo record_imu_static.py \
+  --topic /odin1/imu \
+  --duration 7200 \
+  --output /tmp/odin_imu_static_2h.txt
+```
+
+## Odin FAST-LIVO2 Config Check
+
+Checked on 2026-05-25:
+
+- `mapping_odin.launch.py` loads `config/odin.yaml` and `config/camera_odin.yaml`.
+- Source and installed copies of `odin.yaml`, `camera_odin.yaml`, and
+  `mapping_odin.launch.py` were identical.
+- The Odin topics are `/odin1/imu`, `/odin1/cloud_raw`, and
+  `/odin1/image/undistorted`.
+- `preprocess.lidar_type: 8` selects the Odin point cloud handler.
+- `camera_odin.yaml` uses `1600x1296`, matching the current undistorted image.
+- `img_time_offset: 0.001685342` remains consistent with the measured
+  image/cloud nearest-neighbor offset.
+- No obvious Odin FAST-LIVO2 config error was found.
+
 ## Environment Limitations Seen Here
 
 The sandbox/workspace environment has restrictions that are not code defects:

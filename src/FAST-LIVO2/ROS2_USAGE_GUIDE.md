@@ -338,6 +338,45 @@ or longer for reliable `b_acc_cov` and `b_gyr_cov`. If a bias random walk axis
 is unresolved, the calibration script reports it as `unresolved` and excludes
 that axis from the mean instead of averaging in zero.
 
+## Odin NUC Commands
+
+The latest synchronized NUC workspace is:
+
+```text
+nuc13@10.56.238.241:/home/nuc13/livo_workspace
+```
+
+Functional commit:
+
+```text
+1d21ef3 Add Odin IMU calibration workflow
+```
+
+Normal runtime:
+
+```bash
+cd /home/nuc13/livo_workspace
+source install/setup.bash
+export ROS_LOG_DIR=/tmp/ros-log
+ros2 launch odin_ros_driver odin1_fast_livo_ros2.launch.py
+```
+
+```bash
+cd /home/nuc13/livo_workspace
+source install/setup.bash
+export ROS_LOG_DIR=/tmp/ros-log
+ros2 launch fast_livo mapping_odin.launch.py rviz:=false
+```
+
+IMU-only runtime:
+
+```bash
+cd /home/nuc13/livo_workspace
+source install/setup.bash
+export ROS_LOG_DIR=/tmp/ros-log
+ros2 launch odin_ros_driver odin1_imu_only_ros2.launch.py
+```
+
 ## DDS Comparison Summary
 
 Tested with `Bright_Screen_Wall_Ros2`:

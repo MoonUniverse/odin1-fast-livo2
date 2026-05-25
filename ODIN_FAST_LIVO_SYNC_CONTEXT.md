@@ -163,6 +163,73 @@ Conclusion:
 - For FAST-LIVO2, `img_time_offset: 0.001685342` aligns image timestamps to cloud timestamps.
 - Motion did not materially affect topic frequency in the 5 minute test.
 
+### 2026-05-25 5 Minute Topic Stability Retest
+
+Command:
+
+```bash
+source install/setup.bash
+export ROS_LOG_DIR=/tmp/ros-log
+ros2 launch odin_ros_driver odin1_fast_livo_ros2.launch.py
+```
+
+Measured for 300 seconds with subscribers on `/odin1/imu`, `/odin1/cloud_raw`,
+and `/odin1/image/undistorted`.
+
+Results:
+
+- `/odin1/imu`: count `119845`, rate `399.551 Hz`
+  - receive interval p95 `3.206 ms`, p99 `8.836 ms`, max `24.632 ms`
+  - stamp interval p95 `2.546 ms`, p99 `2.558 ms`, max `5.044 ms`
+- `/odin1/cloud_raw`: count `3077`, rate `10.260 Hz`
+  - receive interval p95 `114.851 ms`, p99 `121.357 ms`, max `130.725 ms`
+  - stamp interval p95 `97.518 ms`, p99 `97.526 ms`, max `97.551 ms`
+- `/odin1/image/undistorted`: count `3077`, rate `10.259 Hz`
+  - receive interval p95 `105.906 ms`, p99 `108.416 ms`, max `111.339 ms`
+  - stamp interval p95 `97.518 ms`, p99 `97.526 ms`, max `97.551 ms`
+  - shape `1600x1296 bgr8`
+- `/odin1/cloud_raw` fields: `x`, `y`, `z`, `intensity`, `confidence`, `offset_time`
+- Synchronization:
+  - cloud to nearest IMU abs p95 `1.186 ms`, p99 `1.240 ms`
+  - image to nearest IMU abs p95 `1.189 ms`, p99 `1.239 ms`
+  - image to nearest cloud abs p95 `1.685 ms`, p99 `1.685 ms`
+
+Conclusion:
+
+- The 5 minute retest did not reproduce topic frequency instability.
+- Cloud and undistorted image counts were identical.
+- Header stamp intervals were stable; larger receive interval p99/max values
+  were attributed to host/DDS/subscriber scheduling jitter.
+- `img_time_offset: 0.001685342` remains consistent with the nearest-neighbor
+  image/cloud offset.
+
+## FAST-LIVO2 Odin Config Audit
+
+Checked on 2026-05-25:
+
+- `mapping_odin.launch.py` loads `config/odin.yaml` and `config/camera_odin.yaml`.
+- Source and installed copies of `odin.yaml`, `camera_odin.yaml`, and
+  `mapping_odin.launch.py` were identical.
+- Configured topics match the driver:
+  - `/odin1/imu`
+  - `/odin1/cloud_raw`
+  - `/odin1/image/undistorted`
+- `preprocess.lidar_type: 8` selects the Odin point cloud handler.
+- `camera_odin.yaml` uses `1600x1296`, matching the current undistorted image.
+- `camera_odin.yaml` has `scale: 0.5`, but this does not resize the current
+  Odin image because the incoming image already matches the camera model size.
+- `Rcl` is near-orthonormal with determinant about `1.000002`.
+- `extrinsic_T: [-0.02663, 0.03447, 0.02174]` matches the Odin driver's fixed
+  LiDAR-to-IMU translation.
+- No obvious Odin FAST-LIVO2 config error was found.
+
+If FAST-LIVO2 runtime looks unstable, check logs for:
+
+- `Throw one image frame`
+- `Image need Jumps`
+- `IMU and LiDAR not synced`
+- VIO/LIO processing time spikes
+
 ## Build Verification
 
 Successful builds:
@@ -221,3 +288,40 @@ ros2 run fast_livo record_imu_static.py --topic /odin1/imu --duration 7200 --out
 - FAST-LIVO optimized config uses `recorddata: 0`.
 - No recorddata directories were left after the final tests.
 - Earlier full-launch test generated `recorddata/20260522_095011`, total `6.8G`; it was deleted after measurement.
+
+## Commit and NUC Deployment
+
+Latest functional commit before this context update:
+
+```text
+1d21ef3 Add Odin IMU calibration workflow
+```
+
+It includes:
+
+- IMU Allan calibration BRW averaging fix.
+- `imu_calibrate.py` installed for `ros2 run`.
+- Odin IMU-only config and launch.
+- Publisher creation gated by Odin stream config, so IMU-only mode only
+  advertises `/odin1/imu` under `/odin1/*`.
+- Documentation for IMU calibration and Odin runtime.
+
+Synchronized target:
+
+```text
+nuc13@10.56.238.241:/home/nuc13/livo_workspace
+```
+
+NUC build was verified with:
+
+```bash
+cd /home/nuc13/livo_workspace
+source /opt/ros/humble/setup.bash
+env PATH=/usr/bin:/bin:/opt/ros/humble/bin:/usr/local/bin \
+  colcon build --packages-select livox_ros_driver2 vikit_common odin_ros_driver fast_livo \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+Build result: all four packages built successfully. Only existing warnings were
+observed: pcap disabled, ignored `system()` return values, CMake `PCL_ROOT`
+CMP0074 warning, and Boost bind placeholder warning.

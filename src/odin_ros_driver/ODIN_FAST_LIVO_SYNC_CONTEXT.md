@@ -136,6 +136,27 @@ Conclusion:
 - For FAST-LIVO2, `img_time_offset: 0.001685342` aligns image timestamps to cloud timestamps.
 - Motion did not materially affect topic frequency in the 5 minute test.
 
+### 2026-05-25 5 Minute Topic Stability Retest
+
+Measured for 300 seconds using `odin1_fast_livo_ros2.launch.py`.
+
+Results:
+
+- `/odin1/imu`: count `119845`, rate `399.551 Hz`, stamp p95 `2.546 ms`, stamp p99 `2.558 ms`, max `5.044 ms`
+- `/odin1/cloud_raw`: count `3077`, rate `10.260 Hz`, stamp p95 `97.518 ms`, stamp p99 `97.526 ms`, max `97.551 ms`
+- `/odin1/image/undistorted`: count `3077`, rate `10.259 Hz`, stamp p95 `97.518 ms`, stamp p99 `97.526 ms`, max `97.551 ms`
+- image shape `1600x1296 bgr8`
+- cloud fields: `x`, `y`, `z`, `intensity`, `confidence`, `offset_time`
+- cloud to nearest IMU abs p95 `1.186 ms`
+- image to nearest IMU abs p95 `1.189 ms`
+- image to nearest cloud abs p95 `1.685 ms`
+
+Conclusion:
+
+- The retest did not reproduce topic frequency instability.
+- Cloud and undistorted image counts were identical.
+- Header timestamps were stable.
+
 ## Recommended Runtime
 
 Terminal 1:
@@ -176,3 +197,29 @@ cd /home/alienware/livo_workspace
 source install/setup.bash
 ros2 run fast_livo record_imu_static.py --topic /odin1/imu --duration 7200 --output /tmp/odin_imu_static.txt
 ```
+
+## Commit and NUC Deployment
+
+Functional commit:
+
+```text
+1d21ef3 Add Odin IMU calibration workflow
+```
+
+Synchronized and built on:
+
+```text
+nuc13@10.56.238.241:/home/nuc13/livo_workspace
+```
+
+NUC build command:
+
+```bash
+cd /home/nuc13/livo_workspace
+source /opt/ros/humble/setup.bash
+env PATH=/usr/bin:/bin:/opt/ros/humble/bin:/usr/local/bin \
+  colcon build --packages-select livox_ros_driver2 vikit_common odin_ros_driver fast_livo \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+Build result: all four packages built successfully with only existing warnings.
