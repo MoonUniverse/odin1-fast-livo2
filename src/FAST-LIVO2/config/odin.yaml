@@ -65,10 +65,10 @@ vio:
 imu:
   imu_en: true
   imu_int_frame: 30
-  acc_cov: 2.66e-04
-  gyr_cov: 1.95e-06
-  b_acc_cov: 1.29e-05
-  b_gyr_cov: 1.84e-08
+  acc_cov: 4.273418e-04
+  gyr_cov: 1.737642e-06
+  b_acc_cov: 9.059049e-07
+  b_gyr_cov: 1.016301e-08
 lio:
   max_iterations: 5
   dept_err: 0.02
