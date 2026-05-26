@@ -2665,12 +2665,13 @@ int main(int argc, char *argv[])
         g_param_monitor_thread.join();
     }
 
+    // Convert calib.yaml and flush recorddata before _Exit skips C++ destructors.
+    if (g_record_data && g_ros_object && !g_ros_object->get_root_dir().empty()) {
+        const std::filesystem::path out_path = g_ros_object->get_root_dir() / "image" / "cam_in_ex.txt";
+        (void)convert_calib_to_cam_in_ex(calib_file_, out_path);
+    }
+
     if (odinDevice) {
-        // Convert calib.yaml to cam_in_ex.txt at program end
-        if (g_record_data && g_ros_object && !g_ros_object->get_root_dir().empty()) {
-            const std::filesystem::path out_path = g_ros_object->get_root_dir() / "image" / "cam_in_ex.txt";
-            (void)convert_calib_to_cam_in_ex(calib_file_, out_path);
-        }
         #ifdef ROS2
             RCLCPP_INFO(rclcpp::get_logger("device_cb"), "pose_index: %d", g_ros_object->get_pose_index());
             RCLCPP_INFO(rclcpp::get_logger("device_cb"), "cloud_index: %d", g_ros_object->get_cloud_index());
@@ -2687,6 +2688,10 @@ int main(int argc, char *argv[])
             fclose(dev_status_csv_file);
             dev_status_csv_file = nullptr;
         }
+    }
+
+    if (g_record_data && g_ros_object) {
+        g_ros_object->shutdown_data_logger();
     }
     
 

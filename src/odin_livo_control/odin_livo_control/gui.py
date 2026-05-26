@@ -49,6 +49,7 @@ apply_default_ros_environment()
 
 ODIN_WARMUP_S = 10.0
 STOP_GAP_S = 2.0
+ODIN_GRACEFUL_STOP_TIMEOUT_S = 60.0
 GRACEFUL_STOP_TIMEOUT_S = 30.0
 TERM_TIMEOUT_S = 5.0
 
@@ -173,7 +174,11 @@ class OdinLivoController:
             if options.odin_recorddata:
                 odin_config = self._write_odin_runtime_config(recorddata=True)
                 odin_command.append(f"config_file:={odin_config}")
-                self._append_log("Odin", f"[control] Odin recorddata enabled: {odin_config}")
+                self._append_log(
+                    "Odin",
+                    f"[control] Odin recorddata enabled: {odin_config} "
+                    "(SLAM cloud/odom streams enabled for OLX recording)",
+                )
             odin = self._launch(
                 "Odin",
                 odin_command,
@@ -229,6 +234,9 @@ class OdinLivoController:
             config = yaml.safe_load(handle)
         register_keys = config.setdefault("register_keys", {})
         register_keys["recorddata"] = 1 if recorddata else 0
+        if recorddata:
+            register_keys["sendcloudslam"] = 1
+            register_keys["sendodom"] = 1
         output = self._run_dir / "control_command_fast_livo_gui.yaml"
         with open(output, "w", encoding="utf-8") as handle:
             yaml.safe_dump(config, handle, default_flow_style=False, sort_keys=False)
@@ -238,7 +246,7 @@ class OdinLivoController:
         try:
             if odin is not None:
                 self._set_state("Odin", "Stopping", "Sending SIGINT")
-                self._stop_managed(odin, graceful_timeout=TERM_TIMEOUT_S)
+                self._stop_managed(odin, graceful_timeout=ODIN_GRACEFUL_STOP_TIMEOUT_S)
                 with self._lock:
                     if self._odin is odin:
                         self._odin = None

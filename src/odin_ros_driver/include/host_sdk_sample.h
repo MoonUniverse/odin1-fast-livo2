@@ -1512,6 +1512,19 @@ void publishRgb(capture_Image_List_t *stream) {
         }
     }
 
+    void shutdown_data_logger() {
+        if (!data_logger_) {
+            return;
+        }
+        #ifdef ROS2
+            RCLCPP_INFO(node_->get_logger(), "Data logger flushing at %s", root_dir_.c_str());
+        #endif
+        data_logger_.reset();
+        #ifdef ROS2
+            RCLCPP_INFO(node_->get_logger(), "Data logger flushed");
+        #endif
+    }
+
     int loadCameraParams(const std::string& yaml_file) {
         try {
             YAML::Node config = YAML::LoadFile(yaml_file);
