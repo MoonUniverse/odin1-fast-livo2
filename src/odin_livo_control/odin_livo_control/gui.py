@@ -21,7 +21,7 @@ def apply_default_ros_environment(env: Optional[Dict[str, str]] = None) -> Dict[
     target = os.environ if env is None else env
     target.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
     target.setdefault("ROS_DOMAIN_ID", "33")
-    target.setdefault("ROS_LOCALHOST_ONLY", "1")
+    target["ROS_LOCALHOST_ONLY"] = "1"
     target["ROS_LOG_DIR"] = str(ROS_LOG_DIR)
     return target
 

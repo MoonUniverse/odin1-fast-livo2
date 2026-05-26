@@ -34,7 +34,7 @@ mkdir -p "${LOG_DIR}" /tmp/ros-log
   export ODIN_LIVO_WORKSPACE="${WORKSPACE}"
   export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
   export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-33}"
-  export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
+  export ROS_LOCALHOST_ONLY=1
   export ROS_LOG_DIR="${ROS_LOG_DIR:-/tmp/ros-log}"
 
   exec ros2 run odin_livo_control odin_livo_gui
