@@ -1,0 +1,3 @@
+[submodule "src/Global-LVBA"]
+	path = src/Global-LVBA
+	url = https://github.com/xuankuzcr/Global-LVBA.git
