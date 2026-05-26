@@ -296,8 +296,10 @@ std::string LIVMapper::outputPath(const std::string &relative_path) const
 void LIVMapper::initializeFiles() 
 {
   std::filesystem::create_directories(output_run_dir);
-  std::filesystem::create_directories(outputPath("pcd"));
-  std::filesystem::create_directories(outputPath("image"));
+  if (pcd_save_en) std::filesystem::create_directories(outputPath("all_pcd_body"));
+  if (img_save_en) std::filesystem::create_directories(outputPath("all_image"));
+  if (final_map_save_en) std::filesystem::create_directories(outputPath("final_map"));
+  if (pcd_save_en && pcd_save_type == 0) std::filesystem::create_directories(outputPath("pcd"));
   std::filesystem::create_directories(outputPath("result"));
   std::filesystem::create_directories(outputPath("Colmap/images"));
   std::filesystem::create_directories(outputPath("Colmap/sparse/0"));
@@ -307,8 +309,8 @@ void LIVMapper::initializeFiles()
   RCLCPP_INFO(this->get_logger(), "FAST-LIVO2 output run directory: %s", output_run_dir.c_str());
 
   if(colmap_output_en) fout_points.open(outputPath("Colmap/sparse/0/points3D.txt"), std::ios::out);
-  if(pcd_save_en) fout_lidar_pos.open(outputPath("pcd/lidar_poses.txt"), std::ios::out);
-  if(img_save_en) fout_visual_pos.open(outputPath("image/image_poses.txt"), std::ios::out);
+  if(pcd_save_en) fout_lidar_pos.open(outputPath("all_pcd_body/lidar_poses.txt"), std::ios::out);
+  if(img_save_en) fout_visual_pos.open(outputPath("all_image/image_poses.txt"), std::ios::out);
   fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"), std::ios::out);
   fout_out.open(DEBUG_FILE_DIR("mat_out.txt"), std::ios::out);
 }
@@ -722,8 +724,8 @@ void LIVMapper::saveFinalMap()
 {
   if (!final_map_save_en) return;
 
-  const std::string final_map_dir = outputPath("pcd/final_map.pcd");
-  const std::string final_rgb_map_dir = outputPath("pcd/final_map_rgb.pcd");
+  const std::string final_map_dir = outputPath("final_map/final_map.pcd");
+  const std::string final_rgb_map_dir = outputPath("final_map/final_map_rgb.pcd");
   pcl::PCDWriter pcd_writer;
   if (pcl_final_map_intensity && !pcl_final_map_intensity->empty())
   {
@@ -1599,17 +1601,22 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
         if (LidarMeasures.lio_vio_flg == LIO || LidarMeasures.lio_vio_flg == LO)
         {
           int size = feats_undistort->points.size();
-          PointCloudXYZI::Ptr laserCloudBody(new PointCloudXYZI(size, 1));
+          pcl::PointCloud<pcl::PointXYZI>::Ptr laserCloudBody(new pcl::PointCloud<pcl::PointXYZI>(size, 1));
           for (int i = 0; i < size; i++)
           {
-            RGBpointBodyLidarToIMU(&feats_undistort->points[i], &laserCloudBody->points[i]);
+            PointType body_point;
+            RGBpointBodyLidarToIMU(&feats_undistort->points[i], &body_point);
+            laserCloudBody->points[i].x = body_point.x;
+            laserCloudBody->points[i].y = body_point.y;
+            laserCloudBody->points[i].z = body_point.z;
+            laserCloudBody->points[i].intensity = body_point.intensity;
           }
           if (pose_trigger)
           {
             if (!laserCloudBody->empty() &&
                 shouldSaveForPose(last_pcd_save_pose_valid, last_pcd_save_pos, last_pcd_save_rot, last_pcd_save_time, update_time))
             {
-              string all_points_dir = outputPath("pcd/" + ss_time.str() + ".pcd");
+              string all_points_dir = outputPath("all_pcd_body/" + ss_time.str() + ".pcd");
               pcl::PCDWriter pcd_writer;
               cout << "pose-gated body frame scan saved to " << all_points_dir << endl;
               pcd_writer.writeBinary(all_points_dir, *laserCloudBody);
@@ -1618,13 +1625,13 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
           }
           else
           {
-            *pcl_wait_save_intensity += *laserCloudBody;
-            scan_wait_num++;
-            cout << "save body frame points: " << pcl_wait_save_intensity->points.size() << endl;
+            string all_points_dir = outputPath("all_pcd_body/" + ss_time.str() + ".pcd");
+            pcl::PCDWriter pcd_writer;
+            cout << "body frame scan saved to " << all_points_dir << endl;
+            pcd_writer.writeBinary(all_points_dir, *laserCloudBody);
+            pcd_saved = true;
           }
         }
-        if (!pose_trigger) pcd_save_interval = 1;
-        
         break;
 
       default:
@@ -1682,7 +1689,7 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
 
     if (save_image)
     {
-      imwrite(outputPath("image/" + ss_time.str() + ".png"), vio_manager->img_rgb);
+      imwrite(outputPath("all_image/" + ss_time.str() + ".png"), vio_manager->img_rgb);
       
       Eigen::Quaterniond q(_state.rot_end);
       fout_visual_pos << std::fixed << std::setprecision(6);
