@@ -1180,3 +1180,197 @@ Results:
   - `/tmp/fast_livo_output_dir_smoke/topic_reports`
 - Internal report files were written under the smoke test `topic_reports/`
   directory.
+
+## 2026-05-26 IMU Calibration, NUC Sync, and v0.1 Closeout
+
+Performed 4 hour static Odin IMU recording using IMU-only driver mode.
+
+Runtime:
+
+```bash
+cd /home/alienware/livo_workspace
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ROS_LOG_DIR=/tmp/ros-log ros2 launch odin_ros_driver odin1_imu_only_ros2.launch.py
+```
+
+Recording:
+
+```bash
+ros2 run fast_livo record_imu_static.py \
+  --topic /odin1/imu \
+  --duration 14400 \
+  --output /tmp/odin_imu_calibration_20260525_221926/odin_imu_static_4h.txt
+```
+
+Recording result:
+
+- Only Odin IMU topic was active:
+  - `/odin1/imu`
+  - plus ROS internal `/parameter_events` and `/rosout`
+- Samples: `5,751,554`
+- Duration: `14400 s`
+- Average rate: about `399.4 Hz`
+- Raw data:
+  - `/tmp/odin_imu_calibration_20260525_221926/odin_imu_static_4h.txt`
+- Allan plot:
+  - `/tmp/odin_imu_calibration_20260525_221926/odin_allan_deviation_4h.png`
+- Calibration report:
+  - `/tmp/odin_imu_calibration_20260525_221926/imu_calibration_report_4h.txt`
+- Static summary:
+  - `/tmp/odin_imu_calibration_20260525_221926/static_bias_summary_4h.txt`
+
+Static gyro mean / bias reference:
+
+```yaml
+gyro_bias_rad_s:
+  x: -2.742841132e-03
+  y: -6.071951401e-03
+  z: -5.002209469e-03
+```
+
+Static accelerometer mean:
+
+```yaml
+accel_mean_m_s2:
+  x: 8.375977092e-02
+  y: -6.572069278e-02
+  z: 9.918900067e+00
+accel_mean_norm_m_s2: 9.919471429e+00
+```
+
+FAST-LIVO2 Odin IMU parameters were updated in
+`src/FAST-LIVO2/config/odin.yaml`:
+
+```yaml
+imu:
+  imu_en: true
+  imu_int_frame: 30
+  acc_cov: 4.273418e-04
+  gyr_cov: 1.737642e-06
+  b_acc_cov: 9.059049e-07
+  b_gyr_cov: 1.016301e-08
+```
+
+Note:
+
+- The static gyro mean is a bias reference, but it was not added to
+  `odin.yaml` because current FAST-LIVO2 config does not expose fixed initial
+  gyro bias fields. FAST-LIVO2 estimates bias online.
+- Accelerometer bias cannot be uniquely decomposed from one unknown static
+  orientation; only the static mean and norm check were recorded.
+
+Relevant commits:
+
+```text
+083006d Add desktop GUI output controls
+b9b4931 Update Odin IMU calibration parameters
+32aaa1e Make GUI launcher workspace-relative
+```
+
+NUC synchronization target:
+
+```text
+nuc13@10.56.238.241:/home/nuc13/livo_workspace
+```
+
+Synchronized to NUC:
+
+- FAST-LIVO2 Odin config and source changes
+- Odin driver source changes
+- `topic_monitor` diagnostics files
+- `odin_livo_control` GUI package
+- `scripts/launch_odin_livo_gui.sh`
+- `scripts/Odin_FAST-LIVO2_Control.desktop`
+- root `ODIN_FAST_LIVO_SYNC_CONTEXT.md`
+
+NUC desktop launcher installed:
+
+```text
+/home/nuc13/Desktop/Odin_FAST-LIVO2_Control.desktop
+```
+
+NUC desktop launcher points to:
+
+```text
+Exec=/home/nuc13/livo_workspace/scripts/launch_odin_livo_gui.sh
+Path=/home/nuc13/livo_workspace
+```
+
+The GUI launcher script is now workspace-relative:
+
+```bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE="$(cd "${SCRIPT_DIR}/.." && pwd)"
+```
+
+NUC build verification:
+
+```bash
+cd /home/nuc13/livo_workspace
+source /opt/ros/humble/setup.bash
+env PATH=/usr/bin:/bin:/opt/ros/humble/bin:/usr/local/bin \
+  colcon build --packages-select topic_monitor odin_ros_driver fast_livo odin_livo_control \
+  --executor sequential \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+```
+
+Build result:
+
+- `topic_monitor`, `odin_ros_driver`, `fast_livo`, and `odin_livo_control`
+  built successfully on NUC.
+- Only existing warnings were observed:
+  - ignored `system()` return values in Odin driver
+  - FAST-LIVO2 PCL/CMake warning
+
+NUC runtime argument verification:
+
+```bash
+ROS_LOG_DIR=/tmp/ros-log ros2 launch fast_livo mapping_odin.launch.py --show-args
+```
+
+Expected arguments include:
+
+```text
+pcd_save
+image_save
+output_run_dir
+save_translation_m
+save_rotation_deg
+```
+
+NUC `config/odin.yaml` verified with calibrated IMU values:
+
+```yaml
+acc_cov: 4.273418e-04
+gyr_cov: 1.737642e-06
+b_acc_cov: 9.059049e-07
+b_gyr_cov: 1.016301e-08
+```
+
+Repository state notes:
+
+- Local `src/Global-LVBA/` is intentionally ignored for this Odin FAST-LIVO2
+  integration work.
+- Odin runtime-generated `config/Conn_*` directories are not part of v0.1 and
+  should not be committed.
+- NUC was synchronized by file copy and rebuilt; it may show a dirty git
+  worktree even though source and install outputs are operationally synced.
+
+v0.1 status:
+
+- Odin FAST-LIVO2 integration v0.1 is considered complete.
+- Completed areas:
+  - optimized Odin ROS driver FAST-LIVO launch/config
+  - Odin raw cloud parser in FAST-LIVO2
+  - reliable QoS for Odin cloud callback stability
+  - topic diagnostics and quiet logging
+  - pose-gated PCD/image saving
+  - per-run FAST-LIVO2 output directories
+  - desktop Tkinter GUI with save controls
+  - local and NUC desktop launchers
+  - 4 hour Odin IMU calibration and updated FAST-LIVO2 Odin IMU noise config
+- Recommended next phase:
+  - real-world trajectory/map-quality testing
+  - tune FAST-LIVO2 mapping/VIO parameters only if quality issues appear
+  - decide later whether diagnostic code should remain enabled for production
