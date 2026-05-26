@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-WORKSPACE="/home/alienware/livo_workspace"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG_DIR="/tmp/odin_livo_control"
 LOG_FILE="${LOG_DIR}/desktop_launcher.log"
 
