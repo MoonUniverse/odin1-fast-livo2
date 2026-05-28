@@ -853,14 +853,26 @@ static bool convert_calib_to_cam_in_ex(const std::string& calib_path, const std:
         // Ensure parent directory exists
         std::error_code ec;
         std::filesystem::create_directories(out_path.parent_path(), ec);
+        if (ec) {
+            #ifdef ROS2
+                RCLCPP_ERROR(rclcpp::get_logger("device_cb"), "Failed to create cam_in_ex.txt directory: %s", ec.message().c_str());
+            #else
+                ROS_ERROR("Failed to create cam_in_ex.txt directory: %s", ec.message().c_str());
+            #endif
+            return false;
+        }
 
-        // Truncate file then write content
-        std::ofstream ofs(out_path, std::ios::out | std::ios::trunc);
+        const std::filesystem::path temp_path = out_path.string() + ".tmp";
+        std::filesystem::remove(temp_path, ec);
+        ec.clear();
+
+        // Write to a temp file first, then atomically replace the target.
+        std::ofstream ofs(temp_path, std::ios::out | std::ios::trunc);
         if (!ofs.is_open()) {
             #ifdef ROS2
-                RCLCPP_ERROR(rclcpp::get_logger("device_cb"), "Failed to open cam_in_ex.txt for write: %s", out_path.string().c_str());
+                RCLCPP_ERROR(rclcpp::get_logger("device_cb"), "Failed to open temporary cam_in_ex.txt for write: %s", temp_path.string().c_str());
             #else
-                ROS_ERROR("Failed to open cam_in_ex.txt for write: %s", out_path.string().c_str());
+                ROS_ERROR("Failed to open temporary cam_in_ex.txt for write: %s", temp_path.string().c_str());
             #endif
             return false;
         }
@@ -899,6 +911,29 @@ static bool convert_calib_to_cam_in_ex(const std::string& calib_path, const std:
         ofs << "   v0: " << fmt(v0) << "\n";
 
         ofs.flush();
+        ofs.close();
+        if (!ofs) {
+            std::filesystem::remove(temp_path, ec);
+            #ifdef ROS2
+                RCLCPP_ERROR(rclcpp::get_logger("device_cb"), "Failed to flush temporary cam_in_ex.txt: %s", temp_path.string().c_str());
+            #else
+                ROS_ERROR("Failed to flush temporary cam_in_ex.txt: %s", temp_path.string().c_str());
+            #endif
+            return false;
+        }
+
+        std::filesystem::rename(temp_path, out_path, ec);
+        if (ec) {
+            const std::string rename_error = ec.message();
+            std::error_code remove_ec;
+            std::filesystem::remove(temp_path, remove_ec);
+            #ifdef ROS2
+                RCLCPP_ERROR(rclcpp::get_logger("device_cb"), "Failed to replace cam_in_ex.txt: %s", rename_error.c_str());
+            #else
+                ROS_ERROR("Failed to replace cam_in_ex.txt: %s", rename_error.c_str());
+            #endif
+            return false;
+        }
 
         #ifdef ROS2
             RCLCPP_INFO(rclcpp::get_logger("device_cb"), "Wrote cam_in_ex.txt to: %s", out_path.string().c_str());
@@ -2277,6 +2312,10 @@ static void lidar_device_callback(const lidar_device_info_t* device, bool attach
         bool load_status = g_ros_object->loadCameraParams(calib_config);
         if (g_sendrgb_undistort &&  load_status == 0) {
             g_ros_object->buildUndistortMap();
+        }
+        if (g_record_data && !g_ros_object->get_root_dir().empty()) {
+            const std::filesystem::path out_path = g_ros_object->get_root_dir() / "image" / "cam_in_ex.txt";
+            (void)convert_calib_to_cam_in_ex(calib_file_, out_path);
         }
 
         #ifdef ROS2
