@@ -52,6 +52,7 @@ find_package(pcl_conversions REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(livox_ros_driver2 REQUIRED)
+find_package(odin_ros_driver REQUIRED)
 find_package(vikit_common REQUIRED)
 
 find_package(Eigen3 REQUIRED)
@@ -74,6 +75,7 @@ set(FAST_LIVO_ROS_DEPS
   cv_bridge
   image_transport
   livox_ros_driver2
+  odin_ros_driver
   vikit_common
 )
 
@@ -103,6 +105,11 @@ foreach(target vio lio pre imu_proc laser_mapping)
 endforeach()
 
 target_link_libraries(laser_mapping vio lio pre imu_proc)
+if(TARGET odin_direct_sdk)
+  target_link_libraries(laser_mapping odin_direct_sdk)
+elseif(TARGET odin_ros_driver::odin_direct_sdk)
+  target_link_libraries(laser_mapping odin_ros_driver::odin_direct_sdk)
+endif()
 
 add_executable(fastlivo_mapping src/main.cpp)
 ament_target_dependencies(fastlivo_mapping ${FAST_LIVO_ROS_DEPS})

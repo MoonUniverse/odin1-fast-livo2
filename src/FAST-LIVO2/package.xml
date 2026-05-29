@@ -22,6 +22,7 @@
   <depend>cv_bridge</depend>
   <depend>image_transport</depend>
   <depend>livox_ros_driver2</depend>
+  <depend>odin_ros_driver</depend>
   <depend>vikit_common</depend>
   <exec_depend>topic_monitor</exec_depend>
 

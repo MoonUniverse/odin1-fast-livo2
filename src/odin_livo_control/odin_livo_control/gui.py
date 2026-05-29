@@ -52,6 +52,7 @@ STOP_GAP_S = 2.0
 ODIN_GRACEFUL_STOP_TIMEOUT_S = 60.0
 GRACEFUL_STOP_TIMEOUT_S = 30.0
 TERM_TIMEOUT_S = 5.0
+LEGACY_DDS_MODE = os.environ.get("ODIN_LIVO_LEGACY_DDS", "0") == "1"
 
 
 @dataclass
@@ -168,6 +169,39 @@ class OdinLivoController:
             self._run_dir.mkdir(parents=True, exist_ok=True)
             ROS_LOG_DIR.mkdir(parents=True, exist_ok=True)
             fast_livo_output_dir = WORKSPACE / "src" / "FAST-LIVO2" / "Log" / self._run_dir.name
+
+            if not LEGACY_DDS_MODE:
+                self._set_state("Odin", "Integrated", "Direct SDK input inside FAST-LIVO2")
+                self._set_state("FAST-LIVO2", "Starting", "Launching direct SDK mapping")
+                self._append_log("FAST-LIVO2", f"[control] Output directory: {fast_livo_output_dir}")
+                odin_config = WORKSPACE / "src" / "odin_ros_driver" / "config" / "control_command_fast_livo.yaml"
+                recorddata_dir = WORKSPACE / "src" / "odin_ros_driver" / "recorddata"
+                livo = self._launch(
+                    "FAST-LIVO2",
+                    [
+                        "ros2",
+                        "launch",
+                        "fast_livo",
+                        "mapping_odin_direct.launch.py",
+                        f"rviz:={'true' if options.rviz else 'false'}",
+                        f"pcd_save:={'true' if options.fast_livo_pcd else 'false'}",
+                        "final_map_save:=false",
+                        f"image_save:={'true' if options.fast_livo_image else 'false'}",
+                        f"output_run_dir:={fast_livo_output_dir}",
+                        f"topic_report_dir:={fast_livo_output_dir / 'topic_reports'}",
+                        f"save_translation_m:={options.save_translation_m:.6f}",
+                        f"save_rotation_deg:={options.save_rotation_deg:.6f}",
+                        f"odin_config:={odin_config}",
+                        f"recorddata:={'true' if options.odin_recorddata else 'false'}",
+                        f"recorddata_dir:={recorddata_dir}",
+                        "publish_debug_topics:=false",
+                    ],
+                    self._run_dir / "fast_livo_direct.log",
+                )
+                with self._lock:
+                    self._livo = livo
+                self._set_state("FAST-LIVO2", "Running", "Direct SDK mapping launched")
+                return
 
             self._set_state("Odin", "Starting", "Launching Odin driver")
             odin_command = ["ros2", "launch", "odin_ros_driver", "odin1_fast_livo_ros2.launch.py"]

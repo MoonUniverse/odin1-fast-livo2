@@ -18,6 +18,7 @@ which is included as part of this source code package.
 #include "preprocess.h"
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.hpp>
+#include <odin_direct_sdk.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <vikit/pinhole_camera.h>
 #include <chrono>
@@ -36,6 +37,7 @@ public:
   explicit LIVMapper(const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
   ~LIVMapper();
   void initializeSubscribersAndPublishers();
+  void initializeDirectOdinInput();
   void initializeComponents();
   void initializeFiles();
   void run();
@@ -87,6 +89,7 @@ public:
   
   string root_dir, output_run_dir, internal_topic_report_dir;
   string lid_topic, imu_topic, seq_name, img_topic;
+  string input_source = "ros_topic", odin_direct_config_file, odin_direct_recorddata_dir;
   V3D extT;
   M3D extR;
 
@@ -131,6 +134,8 @@ public:
 
   bool lidar_pushed = false, imu_en, gravity_est_en, flg_reset = false, ba_bg_est_en = true;
   bool dense_map_en = false;
+  bool odin_direct_recorddata = false;
+  bool odin_direct_publish_debug_topics = false;
   bool lidar_qos_reliable = false;
   bool img_qos_reliable = true;
   int img_en = 1, imu_int_frame = 3;
@@ -211,6 +216,7 @@ public:
   rclcpp::Publisher<geometry_msgs::PoseStamped>::SharedPtr mavros_pose_publisher;
   rclcpp::TimerBase::SharedPtr imu_prop_timer;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  std::unique_ptr<odin_ros_driver::OdinDirectSdk> odin_direct_sdk_;
   std::unique_ptr<vk::AbstractCamera> camera_;
   std::chrono::steady_clock::time_point diag_start_time;
   TopicDiagStats diag_imu, diag_cloud, diag_image;

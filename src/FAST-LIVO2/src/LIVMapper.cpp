@@ -129,6 +129,7 @@ void LIVMapper::readParameters()
 {
   readParam(*this, "common.lid_topic", lid_topic, std::string("/livox/lidar"));
   readParam(*this, "common.imu_topic", imu_topic, std::string("/livox/imu"));
+  readParam(*this, "common.input_source", input_source, std::string("ros_topic"));
   readParam(*this, "common.ros_driver_bug_fix", ros_driver_fix_en, false);
   readParam(*this, "common.verbose", verbose_log_en, false);
   g_fast_livo_verbose = verbose_log_en;
@@ -144,6 +145,10 @@ void LIVMapper::readParameters()
   readParam(*this, "common.img_topic", img_topic, std::string("/left_camera/image"));
   readParam(*this, "common.img_qos_reliable", img_qos_reliable, true);
   readParam(*this, "common.img_queue_size", img_queue_size, 200);
+  readParam(*this, "odin_direct.config_file", odin_direct_config_file, std::string(""));
+  readParam(*this, "odin_direct.recorddata", odin_direct_recorddata, false);
+  readParam(*this, "odin_direct.recorddata_dir", odin_direct_recorddata_dir, std::string(""));
+  readParam(*this, "odin_direct.publish_debug_topics", odin_direct_publish_debug_topics, false);
 
   readParam(*this, "vio.normal_en", normal_en, true);
   readParam(*this, "vio.inverse_composition_en", inverse_composition_en, false);
@@ -318,38 +323,45 @@ void LIVMapper::initializeFiles()
 void LIVMapper::initializeSubscribersAndPublishers()
 {
   const auto sensor_qos = rclcpp::SensorDataQoS().keep_last(200000);
-  auto lidar_qos = rclcpp::QoS(rclcpp::KeepLast(std::max(1, lidar_queue_size)));
-  if (lidar_qos_reliable)
+  if (input_source == "odin_direct")
   {
-    lidar_qos.reliable();
+    initializeDirectOdinInput();
   }
   else
   {
-    lidar_qos.best_effort();
+    auto lidar_qos = rclcpp::QoS(rclcpp::KeepLast(std::max(1, lidar_queue_size)));
+    if (lidar_qos_reliable)
+    {
+      lidar_qos.reliable();
+    }
+    else
+    {
+      lidar_qos.best_effort();
+    }
+    if (p_pre->lidar_type == AVIA)
+    {
+      sub_livox_pcl = create_subscription<livox_ros_driver::CustomMsg>(
+          lid_topic, lidar_qos, std::bind(&LIVMapper::livox_pcl_cbk, this, std::placeholders::_1));
+    }
+    else
+    {
+      sub_pcl = create_subscription<sensor_msgs::PointCloud2>(
+          lid_topic, lidar_qos, std::bind(&LIVMapper::standard_pcl_cbk, this, std::placeholders::_1));
+    }
+    sub_imu = create_subscription<sensor_msgs::Imu>(
+        imu_topic, sensor_qos, std::bind(&LIVMapper::imu_cbk, this, std::placeholders::_1));
+    auto image_qos = rclcpp::QoS(rclcpp::KeepLast(std::max(1, img_queue_size)));
+    if (img_qos_reliable)
+    {
+      image_qos.reliable();
+    }
+    else
+    {
+      image_qos.best_effort();
+    }
+    sub_img = create_subscription<sensor_msgs::Image>(
+        img_topic, image_qos, std::bind(&LIVMapper::img_cbk, this, std::placeholders::_1));
   }
-  if (p_pre->lidar_type == AVIA)
-  {
-    sub_livox_pcl = create_subscription<livox_ros_driver::CustomMsg>(
-        lid_topic, lidar_qos, std::bind(&LIVMapper::livox_pcl_cbk, this, std::placeholders::_1));
-  }
-  else
-  {
-    sub_pcl = create_subscription<sensor_msgs::PointCloud2>(
-        lid_topic, lidar_qos, std::bind(&LIVMapper::standard_pcl_cbk, this, std::placeholders::_1));
-  }
-  sub_imu = create_subscription<sensor_msgs::Imu>(
-      imu_topic, sensor_qos, std::bind(&LIVMapper::imu_cbk, this, std::placeholders::_1));
-  auto image_qos = rclcpp::QoS(rclcpp::KeepLast(std::max(1, img_queue_size)));
-  if (img_qos_reliable)
-  {
-    image_qos.reliable();
-  }
-  else
-  {
-    image_qos.best_effort();
-  }
-  sub_img = create_subscription<sensor_msgs::Image>(
-      img_topic, image_qos, std::bind(&LIVMapper::img_cbk, this, std::placeholders::_1));
 
   pubLaserCloudFullRes = create_publisher<sensor_msgs::PointCloud2>("/cloud_registered", 100);
   pubNormal = create_publisher<visualization_msgs::MarkerArray>("visualization_marker", 100);
@@ -368,6 +380,36 @@ void LIVMapper::initializeSubscribersAndPublishers()
   pubImuPropOdom = create_publisher<nav_msgs::Odometry>("/LIVO2/imu_propagate", 10000);
   imu_prop_timer = create_wall_timer(std::chrono::milliseconds(4), std::bind(&LIVMapper::imu_prop_callback, this));
   voxelmap_manager->voxel_map_pub_ = create_publisher<visualization_msgs::MarkerArray>("/planes", 10000);
+}
+
+void LIVMapper::initializeDirectOdinInput()
+{
+  if (odin_direct_config_file.empty())
+  {
+    throw std::runtime_error("common.input_source is odin_direct but odin_direct.config_file is empty");
+  }
+
+  odin_ros_driver::OdinDirectOptions options;
+  options.config_file = odin_direct_config_file;
+  options.recorddata = odin_direct_recorddata;
+  options.recorddata_dir = odin_direct_recorddata_dir;
+  options.publish_debug_topics = odin_direct_publish_debug_topics;
+
+  odin_ros_driver::OdinDirectCallbacks callbacks;
+  callbacks.imu = [this](sensor_msgs::msg::Imu::ConstSharedPtr msg) { this->imu_cbk(msg); };
+  callbacks.cloud = [this](sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) { this->standard_pcl_cbk(msg); };
+  callbacks.image = [this](sensor_msgs::msg::Image::ConstSharedPtr msg) { this->img_cbk(msg); };
+
+  odin_direct_sdk_ = std::make_unique<odin_ros_driver::OdinDirectSdk>(this);
+  if (!odin_direct_sdk_->start(options, std::move(callbacks)))
+  {
+    throw std::runtime_error("Failed to start Odin direct SDK input");
+  }
+  RCLCPP_INFO(
+      this->get_logger(),
+      "FAST-LIVO2 using Odin direct SDK input (debug topics: %s, recorddata: %s)",
+      odin_direct_publish_debug_topics ? "on" : "off",
+      odin_direct_recorddata ? "on" : "off");
 }
 
 void LIVMapper::handleFirstFrame() 
@@ -872,6 +914,10 @@ void LIVMapper::run()
       RCLCPP_WARN(this->get_logger(), "Stopping FAST-LIVO2 after ROS context error during shutdown: %s", e.what());
       break;
     }
+    if (odin_direct_sdk_)
+    {
+      odin_direct_sdk_->spinSome();
+    }
     if (!sync_packages(LidarMeasures)) 
     {
       rate.sleep();
@@ -884,6 +930,17 @@ void LIVMapper::run()
     // if (!p_imu->imu_time_init) continue;
 
     stateEstimationAndMapping();
+  }
+  if (odin_direct_sdk_)
+  {
+    const auto stats = odin_direct_sdk_->stats();
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Odin direct SDK stats: sdk imu/cloud/image=%lu/%lu/%lu delivered=%lu/%lu/%lu dropped=%lu/%lu/%lu",
+        stats.sdk_imu, stats.sdk_cloud, stats.sdk_image,
+        stats.delivered_imu, stats.delivered_cloud, stats.delivered_image,
+        stats.dropped_imu, stats.dropped_cloud, stats.dropped_image);
+    odin_direct_sdk_->stop();
   }
   writeInternalTopicReport();
   savePCD();

@@ -1,4 +1,5 @@
 common:
+  input_source: ros_topic
   img_topic: /odin1/image/undistorted
   lid_topic: /odin1/cloud_raw
   imu_topic: /odin1/imu
@@ -12,6 +13,11 @@ common:
   ros_driver_bug_fix: false
   output_run_dir: ''
   topic_report_dir: ''
+odin_direct:
+  config_file: ''
+  recorddata: false
+  recorddata_dir: ''
+  publish_debug_topics: false
 extrin_calib:
   extrinsic_T:
   - -0.02663

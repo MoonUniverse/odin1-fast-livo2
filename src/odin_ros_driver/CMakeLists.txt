@@ -257,6 +257,15 @@ elseif(ROS_VERSION STREQUAL "ROS2")
         src/rawCloudRender.cpp
         src/camera_pose_visualization.cpp
         )
+
+    add_library(odin_direct_sdk
+        src/odin_direct_sdk.cpp
+        src/yaml_parser.cpp
+    )
+    target_include_directories(odin_direct_sdk PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    )
     
     # Link libraries
     target_link_libraries(host_sdk_sample
@@ -271,6 +280,26 @@ elseif(ROS_VERSION STREQUAL "ROS2")
         std_msgs 
         sensor_msgs 
         nav_msgs 
+        visualization_msgs
+        cv_bridge
+        image_transport
+        tf2
+        tf2_ros
+        geometry_msgs
+        tf2_geometry_msgs
+    )
+
+    target_link_libraries(odin_direct_sdk
+        ${COMMON_LIBS}
+        yaml-cpp
+        usb-1.0
+    )
+
+    ament_target_dependencies(odin_direct_sdk
+        rclcpp
+        std_msgs
+        sensor_msgs
+        nav_msgs
         visualization_msgs
         cv_bridge
         image_transport
@@ -361,14 +390,18 @@ elseif(ROS_VERSION STREQUAL "ROS2")
 
     # Installation rules - ensure all install targets are defined before ament_package()
     # Install executable
+    install(TARGETS odin_direct_sdk
+        EXPORT export_${PROJECT_NAME}
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib
+        RUNTIME DESTINATION lib/${PROJECT_NAME}
+    )
+
     install(TARGETS
         host_sdk_sample
         pcd2depth_ros2_node
         cloud_reprojection_ros2_node
         image_overlay_node
-        EXPORT export_${PROJECT_NAME}
-        ARCHIVE DESTINATION lib
-        LIBRARY DESTINATION lib
         RUNTIME DESTINATION lib/${PROJECT_NAME}
     )
     
@@ -404,6 +437,8 @@ elseif(ROS_VERSION STREQUAL "ROS2")
         )
     endif()
     ament_export_targets(export_${PROJECT_NAME})
+    ament_export_include_directories(include)
+    ament_export_libraries(odin_direct_sdk)
     # Declare dependencies
     ament_export_dependencies(
         rclcpp 
