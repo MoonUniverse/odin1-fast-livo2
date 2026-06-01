@@ -1,6 +1,6 @@
 # Odin Direct SDK FAST-LIVO2 Context
 
-Last updated: 2026-05-29
+Last updated: 2026-06-01
 
 ## Current Branch And Commit
 
@@ -72,6 +72,7 @@ When `common.input_source` is `odin_direct`, `LIVMapper` starts `odin_ros_driver
 New file:
 
 - `src/FAST-LIVO2/launch/mapping_odin_direct.launch.py`
+- `src/FAST-LIVO2/launch/mapping_odin_direct_lio.launch.py`
 
 Key launch arguments:
 
@@ -86,6 +87,26 @@ Key launch arguments:
 - `publish_debug_topics`, default `false`
 
 The `final_map_save` argument was added because `src/FAST-LIVO2/config/odin.yaml` still has `pcd_save.final_map_save_en: true`. Without an explicit override, a direct test with `pcd_save:=false` could still enter the final-map save path during shutdown.
+
+### Direct LIO-only mode
+
+FAST-LIVO2 now has an explicit Odin direct LIO-only launch:
+
+- `src/FAST-LIVO2/launch/mapping_odin_direct_lio.launch.py`
+
+This launch keeps the direct SDK input path but sets:
+
+- `common.img_en: 0`
+- `image_save.img_save_en: false`
+
+With `common.img_en=0`, `LIVMapper` selects `ONLY_LIO`, skips camera/VIO initialization, does not subscribe to image data, and passes `enable_image_stream=false` to `OdinDirectSdk`.
+
+`OdinDirectSdk` then forces the RGB stream off at runtime:
+
+- `sendrgb=0`
+- `sendrgbundistort=0`
+
+This means the device should stream only IMU and DTOF cloud for FAST-LIVO2 LIO. The existing `control_command_fast_livo.yaml` is not modified, so the previously validated direct LIVO launch remains the default behavior.
 
 ### GUI integration
 
@@ -249,6 +270,33 @@ cd /home/nuc13/livo_workspace
 source install/setup.bash
 ros2 run odin_livo_control gui
 ```
+
+Run direct SDK LIO-only from CLI:
+
+```bash
+cd /home/nuc13/livo_workspace
+source install/setup.bash
+ros2 launch fast_livo mapping_odin_direct_lio.launch.py \
+  rviz:=false \
+  output_run_dir:=/tmp/fast_livo_direct_lio_test \
+  pcd_save:=false \
+  final_map_save:=false \
+  publish_debug_topics:=false \
+  recorddata:=false
+```
+
+Run GUI direct SDK LIO-only:
+
+- start the GUI normally;
+- check `LIO only`;
+- press `Start`.
+
+Expected LIO-only runtime signs:
+
+- FAST-LIVO2 logs `FAST-LIVO2 mode: ONLY_LIO`;
+- Odin direct SDK logs `streams active: rgb=0 imu=1 dtof=1`;
+- SDK image stats remain zero;
+- no `[ VIO ]` or `Get image` messages are expected.
 
 Run GUI in legacy DDS mode:
 

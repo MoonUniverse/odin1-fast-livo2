@@ -249,6 +249,8 @@ bool LIVMapper::loadCameraFromParameters()
 
 void LIVMapper::initializeComponents() 
 {
+  slam_mode_ = (img_en && lidar_en) ? LIVO : imu_en ? ONLY_LIO : ONLY_LO;
+
   downSizeFilterSurf.setLeafSize(filter_size_surf_min, filter_size_surf_min, filter_size_surf_min);
   extT << VEC_FROM_ARRAY(extrinT);
   extR << MAT_FROM_ARRAY(extrinR);
@@ -256,26 +258,29 @@ void LIVMapper::initializeComponents()
   voxelmap_manager->extT_ << VEC_FROM_ARRAY(extrinT);
   voxelmap_manager->extR_ << MAT_FROM_ARRAY(extrinR);
 
-  if (!loadCameraFromParameters()) throw std::runtime_error("Camera model not correctly specified.");
+  if (slam_mode_ == LIVO)
+  {
+    if (!loadCameraFromParameters()) throw std::runtime_error("Camera model not correctly specified.");
 
-  vio_manager->grid_size = grid_size;
-  vio_manager->patch_size = patch_size;
-  vio_manager->outlier_threshold = outlier_threshold;
-  vio_manager->setImuToLidarExtrinsic(extT, extR);
-  vio_manager->setLidarToCameraExtrinsic(cameraextrinR, cameraextrinT);
-  vio_manager->state = &_state;
-  vio_manager->state_propagat = &state_propagat;
-  vio_manager->max_iterations = max_iterations;
-  vio_manager->img_point_cov = IMG_POINT_COV;
-  vio_manager->normal_en = normal_en;
-  vio_manager->inverse_composition_en = inverse_composition_en;
-  vio_manager->raycast_en = raycast_en;
-  vio_manager->grid_n_width = grid_n_width;
-  vio_manager->grid_n_height = grid_n_height;
-  vio_manager->patch_pyrimid_level = patch_pyrimid_level;
-  vio_manager->exposure_estimate_en = exposure_estimate_en;
-  vio_manager->colmap_output_en = colmap_output_en;
-  vio_manager->initializeVIO();
+    vio_manager->grid_size = grid_size;
+    vio_manager->patch_size = patch_size;
+    vio_manager->outlier_threshold = outlier_threshold;
+    vio_manager->setImuToLidarExtrinsic(extT, extR);
+    vio_manager->setLidarToCameraExtrinsic(cameraextrinR, cameraextrinT);
+    vio_manager->state = &_state;
+    vio_manager->state_propagat = &state_propagat;
+    vio_manager->max_iterations = max_iterations;
+    vio_manager->img_point_cov = IMG_POINT_COV;
+    vio_manager->normal_en = normal_en;
+    vio_manager->inverse_composition_en = inverse_composition_en;
+    vio_manager->raycast_en = raycast_en;
+    vio_manager->grid_n_width = grid_n_width;
+    vio_manager->grid_n_height = grid_n_height;
+    vio_manager->patch_pyrimid_level = patch_pyrimid_level;
+    vio_manager->exposure_estimate_en = exposure_estimate_en;
+    vio_manager->colmap_output_en = colmap_output_en;
+    vio_manager->initializeVIO();
+  }
 
   p_imu->set_extrinsic(extT, extR);
   p_imu->set_gyr_cov_scale(V3D(gyr_cov, gyr_cov, gyr_cov));
@@ -288,9 +293,15 @@ void LIVMapper::initializeComponents()
   if (!imu_en) p_imu->disable_imu();
   if (!gravity_est_en) p_imu->disable_gravity_est();
   if (!ba_bg_est_en) p_imu->disable_bias_est();
-  if (!exposure_estimate_en) p_imu->disable_exposure_est();
+  if (slam_mode_ != LIVO || !exposure_estimate_en) p_imu->disable_exposure_est();
 
-  slam_mode_ = (img_en && lidar_en) ? LIVO : imu_en ? ONLY_LIO : ONLY_LO;
+  RCLCPP_INFO(
+      this->get_logger(),
+      "FAST-LIVO2 mode: %s (img_en=%d, lidar_en=%d, imu_en=%s)",
+      slam_mode_ == LIVO ? "LIVO" : (slam_mode_ == ONLY_LIO ? "ONLY_LIO" : "ONLY_LO"),
+      img_en,
+      lidar_en,
+      imu_en ? "true" : "false");
 }
 
 std::string LIVMapper::outputPath(const std::string &relative_path) const
@@ -350,17 +361,20 @@ void LIVMapper::initializeSubscribersAndPublishers()
     }
     sub_imu = create_subscription<sensor_msgs::Imu>(
         imu_topic, sensor_qos, std::bind(&LIVMapper::imu_cbk, this, std::placeholders::_1));
-    auto image_qos = rclcpp::QoS(rclcpp::KeepLast(std::max(1, img_queue_size)));
-    if (img_qos_reliable)
+    if (img_en)
     {
-      image_qos.reliable();
+      auto image_qos = rclcpp::QoS(rclcpp::KeepLast(std::max(1, img_queue_size)));
+      if (img_qos_reliable)
+      {
+        image_qos.reliable();
+      }
+      else
+      {
+        image_qos.best_effort();
+      }
+      sub_img = create_subscription<sensor_msgs::Image>(
+          img_topic, image_qos, std::bind(&LIVMapper::img_cbk, this, std::placeholders::_1));
     }
-    else
-    {
-      image_qos.best_effort();
-    }
-    sub_img = create_subscription<sensor_msgs::Image>(
-        img_topic, image_qos, std::bind(&LIVMapper::img_cbk, this, std::placeholders::_1));
   }
 
   pubLaserCloudFullRes = create_publisher<sensor_msgs::PointCloud2>("/cloud_registered", 100);
@@ -376,7 +390,7 @@ void LIVMapper::initializeSubscribersAndPublishers()
   pubLaserCloudDynRmed = create_publisher<sensor_msgs::PointCloud2>("/dyn_obj_removed", 100);
   pubLaserCloudDynDbg = create_publisher<sensor_msgs::PointCloud2>("/dyn_obj_dbg_hist", 100);
   mavros_pose_publisher = create_publisher<geometry_msgs::PoseStamped>("/mavros/vision_pose/pose", 10);
-  pubImage = image_transport::create_publisher(this, "/rgb_img");
+  if (img_en) pubImage = image_transport::create_publisher(this, "/rgb_img");
   pubImuPropOdom = create_publisher<nav_msgs::Odometry>("/LIVO2/imu_propagate", 10000);
   imu_prop_timer = create_wall_timer(std::chrono::milliseconds(4), std::bind(&LIVMapper::imu_prop_callback, this));
   voxelmap_manager->voxel_map_pub_ = create_publisher<visualization_msgs::MarkerArray>("/planes", 10000);
@@ -394,11 +408,15 @@ void LIVMapper::initializeDirectOdinInput()
   options.recorddata = odin_direct_recorddata;
   options.recorddata_dir = odin_direct_recorddata_dir;
   options.publish_debug_topics = odin_direct_publish_debug_topics;
+  options.enable_image_stream = img_en != 0;
 
   odin_ros_driver::OdinDirectCallbacks callbacks;
   callbacks.imu = [this](sensor_msgs::msg::Imu::ConstSharedPtr msg) { this->imu_cbk(msg); };
   callbacks.cloud = [this](sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) { this->standard_pcl_cbk(msg); };
-  callbacks.image = [this](sensor_msgs::msg::Image::ConstSharedPtr msg) { this->img_cbk(msg); };
+  if (img_en)
+  {
+    callbacks.image = [this](sensor_msgs::msg::Image::ConstSharedPtr msg) { this->img_cbk(msg); };
+  }
 
   odin_direct_sdk_ = std::make_unique<odin_ros_driver::OdinDirectSdk>(this);
   if (!odin_direct_sdk_->start(options, std::move(callbacks)))
@@ -407,9 +425,10 @@ void LIVMapper::initializeDirectOdinInput()
   }
   RCLCPP_INFO(
       this->get_logger(),
-      "FAST-LIVO2 using Odin direct SDK input (debug topics: %s, recorddata: %s)",
+      "FAST-LIVO2 using Odin direct SDK input (debug topics: %s, recorddata: %s, image stream: %s)",
       odin_direct_publish_debug_topics ? "on" : "off",
-      odin_direct_recorddata ? "on" : "off");
+      odin_direct_recorddata ? "on" : "off",
+      img_en ? "on" : "off");
 }
 
 void LIVMapper::handleFirstFrame() 

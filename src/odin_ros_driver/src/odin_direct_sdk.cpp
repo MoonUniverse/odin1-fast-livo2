@@ -104,6 +104,12 @@ bool OdinDirectSdk::start(const OdinDirectOptions &options, OdinDirectCallbacks 
     started_.store(false, std::memory_order_release);
     return false;
   }
+  if (!options_.enable_image_stream)
+  {
+    send_rgb_ = 0;
+    send_rgb_undistort_ = 0;
+    callbacks_.image = nullptr;
+  }
 
   initPublishers();
   initRecorddata();
@@ -207,6 +213,10 @@ void OdinDirectSdk::spinSome(size_t max_imu, size_t max_cloud, size_t max_image)
 
   for (size_t i = 0; i < max_image; ++i)
   {
+    if (!options_.enable_image_stream)
+    {
+      break;
+    }
     sensor_msgs::msg::Image::SharedPtr msg;
     {
       std::lock_guard<std::mutex> lock(image_mutex_);
@@ -437,7 +447,10 @@ void OdinDirectSdk::startWorkers()
   workers_running_.store(true, std::memory_order_release);
   imu_thread_ = std::thread(&OdinDirectSdk::imuWorker, this);
   cloud_thread_ = std::thread(&OdinDirectSdk::cloudWorker, this);
-  image_thread_ = std::thread(&OdinDirectSdk::imageWorker, this);
+  if (options_.enable_image_stream)
+  {
+    image_thread_ = std::thread(&OdinDirectSdk::imageWorker, this);
+  }
 }
 
 void OdinDirectSdk::stopWorkers()
@@ -583,18 +596,18 @@ bool OdinDirectSdk::configureDevice(const lidar_device_info_t *device)
     config_dir = std::filesystem::current_path();
   }
   calib_file_ = (config_dir / "calib.yaml").string();
-  if (device->initial_state != LIDAR_DEVICE_STREAM_STOPPED)
+  if (options_.enable_image_stream && device->initial_state != LIDAR_DEVICE_STREAM_STOPPED)
   {
     if (lidar_get_calib_file(device_, config_dir.c_str()) != 0)
     {
       RCLCPP_WARN(node_->get_logger(), "Odin direct SDK: failed to retrieve calib.yaml into %s", config_dir.c_str());
     }
   }
-  if (std::filesystem::exists(calib_file_) && loadCameraParams(calib_file_))
+  if (options_.enable_image_stream && std::filesystem::exists(calib_file_) && loadCameraParams(calib_file_))
   {
     buildUndistortMap();
   }
-  else
+  else if (options_.enable_image_stream)
   {
     RCLCPP_WARN(node_->get_logger(), "Odin direct SDK: undistort map unavailable; raw decoded images will be used");
   }
@@ -773,7 +786,10 @@ void OdinDirectSdk::initPublishers()
   auto qos_sensor = rclcpp::QoS(10).reliable().durability_volatile();
   imu_pub_ = node_->create_publisher<sensor_msgs::msg::Imu>("/odin1/imu", qos_small);
   cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/odin1/cloud_raw", qos_sensor);
-  image_pub_ = node_->create_publisher<sensor_msgs::msg::Image>("/odin1/image/undistorted", qos_sensor);
+  if (options_.enable_image_stream)
+  {
+    image_pub_ = node_->create_publisher<sensor_msgs::msg::Image>("/odin1/image/undistorted", qos_sensor);
+  }
 }
 
 void OdinDirectSdk::initRecorddata()
@@ -875,7 +891,7 @@ void OdinDirectSdk::recordSlamCloud(const capture_Image_List_t &stream, int idx)
 
 void OdinDirectSdk::writeCamInEx()
 {
-  if (!data_logger_ || calib_file_.empty() || recorddata_root_.empty() || !std::filesystem::exists(calib_file_))
+  if (!options_.enable_image_stream || !data_logger_ || calib_file_.empty() || recorddata_root_.empty() || !std::filesystem::exists(calib_file_))
   {
     return;
   }

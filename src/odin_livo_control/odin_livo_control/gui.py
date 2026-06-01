@@ -68,6 +68,7 @@ class RunOptions:
     rviz: bool
     fast_livo_pcd: bool
     fast_livo_image: bool
+    fast_livo_lio_only: bool
     odin_recorddata: bool
     save_translation_m: float
     save_rotation_deg: float
@@ -183,8 +184,11 @@ class OdinLivoController:
             fast_livo_output_dir = WORKSPACE / "src" / "FAST-LIVO2" / "Log" / self._run_dir.name
 
             if not LEGACY_DDS_MODE:
+                mode_name = "LIO-only direct SDK" if options.fast_livo_lio_only else "Direct SDK mapping"
+                launch_file = "mapping_odin_direct_lio.launch.py" if options.fast_livo_lio_only else "mapping_odin_direct.launch.py"
+                image_save = False if options.fast_livo_lio_only else options.fast_livo_image
                 self._set_state("Odin", "Integrated", "Direct SDK input inside FAST-LIVO2")
-                self._set_state("FAST-LIVO2", "Starting", "Launching direct SDK mapping")
+                self._set_state("FAST-LIVO2", "Starting", f"Launching {mode_name}")
                 self._append_log("FAST-LIVO2", f"[control] Output directory: {fast_livo_output_dir}")
                 odin_config = WORKSPACE / "src" / "odin_ros_driver" / "config" / "control_command_fast_livo.yaml"
                 recorddata_dir = WORKSPACE / "src" / "odin_ros_driver" / "recorddata"
@@ -194,11 +198,11 @@ class OdinLivoController:
                         "ros2",
                         "launch",
                         "fast_livo",
-                        "mapping_odin_direct.launch.py",
+                        launch_file,
                         f"rviz:={'true' if options.rviz else 'false'}",
                         f"pcd_save:={'true' if options.fast_livo_pcd else 'false'}",
                         "final_map_save:=false",
-                        f"image_save:={'true' if options.fast_livo_image else 'false'}",
+                        f"image_save:={'true' if image_save else 'false'}",
                         f"output_run_dir:={fast_livo_output_dir}",
                         f"topic_report_dir:={fast_livo_output_dir / 'topic_reports'}",
                         f"save_translation_m:={options.save_translation_m:.6f}",
@@ -212,7 +216,7 @@ class OdinLivoController:
                 )
                 with self._lock:
                     self._livo = livo
-                self._set_state("FAST-LIVO2", "Running", "Direct SDK mapping launched")
+                self._set_state("FAST-LIVO2", "Running", f"{mode_name} launched")
                 return
 
             self._set_state("Odin", "Starting", "Launching Odin driver")
@@ -462,6 +466,7 @@ class ControlPanel(tk.Tk):
         self._rviz = tk.BooleanVar(value=False)
         self._fast_livo_pcd = tk.BooleanVar(value=False)
         self._fast_livo_image = tk.BooleanVar(value=False)
+        self._fast_livo_lio_only = tk.BooleanVar(value=False)
         self._odin_recorddata = tk.BooleanVar(value=False)
         self._save_translation_m = tk.StringVar(value="0.2")
         self._save_rotation_deg = tk.StringVar(value="10.0")
@@ -478,7 +483,7 @@ class ControlPanel(tk.Tk):
 
         top = ttk.Frame(self, padding=12)
         top.grid(row=0, column=0, sticky="ew")
-        top.columnconfigure(8, weight=1)
+        top.columnconfigure(9, weight=1)
 
         ttk.Button(top, text="Start", command=self._start).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(top, text="Start Odin Recorddata", command=self._start_native_recorddata).grid(
@@ -488,11 +493,12 @@ class ControlPanel(tk.Tk):
         ttk.Checkbutton(top, text="RViz", variable=self._rviz).grid(row=0, column=3, padx=(0, 16))
         ttk.Checkbutton(top, text="FAST-LIVO2 PCD", variable=self._fast_livo_pcd).grid(row=0, column=4, padx=(0, 16))
         ttk.Checkbutton(top, text="FAST-LIVO2 Image", variable=self._fast_livo_image).grid(row=0, column=5, padx=(0, 16))
+        ttk.Checkbutton(top, text="LIO only", variable=self._fast_livo_lio_only).grid(row=0, column=6, padx=(0, 16))
         ttk.Checkbutton(top, text="FAST-LIVO2 Recorddata", variable=self._odin_recorddata).grid(
-            row=0, column=6, padx=(0, 16)
+            row=0, column=7, padx=(0, 16)
         )
-        ttk.Label(top, textvariable=self._states["System"]).grid(row=0, column=7, sticky="w")
-        ttk.Label(top, textvariable=self._details["System"]).grid(row=0, column=8, sticky="e")
+        ttk.Label(top, textvariable=self._states["System"]).grid(row=0, column=8, sticky="w")
+        ttk.Label(top, textvariable=self._details["System"]).grid(row=0, column=9, sticky="e")
 
         status = ttk.LabelFrame(self, text="Status", padding=12)
         status.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
@@ -578,6 +584,7 @@ class ControlPanel(tk.Tk):
             rviz=self._rviz.get(),
             fast_livo_pcd=self._fast_livo_pcd.get(),
             fast_livo_image=self._fast_livo_image.get(),
+            fast_livo_lio_only=self._fast_livo_lio_only.get(),
             odin_recorddata=self._odin_recorddata.get(),
             save_translation_m=save_translation_m,
             save_rotation_deg=save_rotation_deg,

@@ -35,6 +35,7 @@ struct OdinDirectOptions
   std::string config_file;
   bool recorddata = false;
   bool publish_debug_topics = false;
+  bool enable_image_stream = true;
   std::string recorddata_dir;
 };
 
