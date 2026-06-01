@@ -101,6 +101,18 @@ class OdinLivoController:
         thread = threading.Thread(target=self._start_sequence, args=(options,), name="start-sequence", daemon=True)
         thread.start()
 
+    def start_native_recorddata(self):
+        if self.is_busy() or self.has_processes():
+            self._append_log("System", "[control] Native Odin recorddata start ignored; a launch is already active")
+            return
+        self._stop_requested.clear()
+        thread = threading.Thread(
+            target=self._start_native_recorddata_sequence,
+            name="native-recorddata-start-sequence",
+            daemon=True,
+        )
+        thread.start()
+
     def stop(self):
         self._stop_requested.set()
         with self._lock:
@@ -260,6 +272,46 @@ class OdinLivoController:
             with self._lock:
                 self._starting = False
 
+    def _start_native_recorddata_sequence(self):
+        with self._lock:
+            self._starting = True
+        try:
+            if not WORKSPACE.exists():
+                self._set_state("System", "Failed", f"Workspace not found: {WORKSPACE}")
+                return
+            self._run_dir = LOG_ROOT / datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._run_dir.mkdir(parents=True, exist_ok=True)
+            ROS_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+            recorddata_root = WORKSPACE / "src" / "odin_ros_driver" / "recorddata"
+            recorddata_root.mkdir(parents=True, exist_ok=True)
+            odin_config = self._write_odin_native_recorddata_config()
+            self._set_state("FAST-LIVO2", "Idle", "Not used for native Odin recorddata")
+            self._set_state("Odin", "Starting", "Launching native Odin1 ROS2 recorddata")
+            self._append_log("Odin", f"[control] Native Odin recorddata config: {odin_config}")
+            self._append_log("Odin", f"[control] Expected recorddata root: {recorddata_root}")
+
+            odin = self._launch(
+                "Odin",
+                [
+                    "ros2",
+                    "launch",
+                    "odin_ros_driver",
+                    "odin1_ros2.launch.py",
+                    f"config_file:={odin_config}",
+                ],
+                self._run_dir / "odin_native_recorddata.log",
+            )
+            with self._lock:
+                self._odin = odin
+            self._set_state("Odin", "Running", "Native Odin1 ROS2 recorddata launched")
+        except Exception as exc:
+            self._set_state("System", "Failed", str(exc))
+            self._append_log("System", f"[control] Native Odin recorddata start failed: {exc}")
+        finally:
+            with self._lock:
+                self._starting = False
+
     def _write_odin_runtime_config(self, recorddata: bool) -> Path:
         if self._run_dir is None:
             raise RuntimeError("Run directory is not initialized")
@@ -272,6 +324,19 @@ class OdinLivoController:
             register_keys["sendcloudslam"] = 1
             register_keys["sendodom"] = 1
         output = self._run_dir / "control_command_fast_livo_gui.yaml"
+        with open(output, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(config, handle, default_flow_style=False, sort_keys=False)
+        return output
+
+    def _write_odin_native_recorddata_config(self) -> Path:
+        if self._run_dir is None:
+            raise RuntimeError("Run directory is not initialized")
+        source = WORKSPACE / "src" / "odin_ros_driver" / "config" / "control_command.yaml"
+        with open(source, "r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle)
+        register_keys = config.setdefault("register_keys", {})
+        register_keys["recorddata"] = 1
+        output = self._run_dir / "control_command_native_recorddata_gui.yaml"
         with open(output, "w", encoding="utf-8") as handle:
             yaml.safe_dump(config, handle, default_flow_style=False, sort_keys=False)
         return output
@@ -413,16 +478,21 @@ class ControlPanel(tk.Tk):
 
         top = ttk.Frame(self, padding=12)
         top.grid(row=0, column=0, sticky="ew")
-        top.columnconfigure(7, weight=1)
+        top.columnconfigure(8, weight=1)
 
         ttk.Button(top, text="Start", command=self._start).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(top, text="Stop", command=self._stop).grid(row=0, column=1, padx=(0, 16))
-        ttk.Checkbutton(top, text="RViz", variable=self._rviz).grid(row=0, column=2, padx=(0, 16))
-        ttk.Checkbutton(top, text="FAST-LIVO2 PCD", variable=self._fast_livo_pcd).grid(row=0, column=3, padx=(0, 16))
-        ttk.Checkbutton(top, text="FAST-LIVO2 Image", variable=self._fast_livo_image).grid(row=0, column=4, padx=(0, 16))
-        ttk.Checkbutton(top, text="Odin Recorddata", variable=self._odin_recorddata).grid(row=0, column=5, padx=(0, 16))
-        ttk.Label(top, textvariable=self._states["System"]).grid(row=0, column=6, sticky="w")
-        ttk.Label(top, textvariable=self._details["System"]).grid(row=0, column=7, sticky="e")
+        ttk.Button(top, text="Start Odin Recorddata", command=self._start_native_recorddata).grid(
+            row=0, column=1, padx=(0, 8)
+        )
+        ttk.Button(top, text="Stop", command=self._stop).grid(row=0, column=2, padx=(0, 16))
+        ttk.Checkbutton(top, text="RViz", variable=self._rviz).grid(row=0, column=3, padx=(0, 16))
+        ttk.Checkbutton(top, text="FAST-LIVO2 PCD", variable=self._fast_livo_pcd).grid(row=0, column=4, padx=(0, 16))
+        ttk.Checkbutton(top, text="FAST-LIVO2 Image", variable=self._fast_livo_image).grid(row=0, column=5, padx=(0, 16))
+        ttk.Checkbutton(top, text="FAST-LIVO2 Recorddata", variable=self._odin_recorddata).grid(
+            row=0, column=6, padx=(0, 16)
+        )
+        ttk.Label(top, textvariable=self._states["System"]).grid(row=0, column=7, sticky="w")
+        ttk.Label(top, textvariable=self._details["System"]).grid(row=0, column=8, sticky="e")
 
         status = ttk.LabelFrame(self, text="Status", padding=12)
         status.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
@@ -512,6 +582,11 @@ class ControlPanel(tk.Tk):
             save_translation_m=save_translation_m,
             save_rotation_deg=save_rotation_deg,
         ))
+
+    def _start_native_recorddata(self):
+        self._states["System"].set("Starting")
+        self._details["System"].set("")
+        self._controller.start_native_recorddata()
 
     def _stop(self):
         self._states["System"].set("Stopping")
