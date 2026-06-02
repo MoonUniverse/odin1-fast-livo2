@@ -306,9 +306,26 @@ source install/setup.bash
 ODIN_LIVO_LEGACY_DDS=1 ros2 run odin_livo_control gui
 ```
 
+## Save/Layering Debug Notes
+
+User test result on 2026-06-01:
+
+- Full LIVO with runtime PCD/image saving disabled behaved normally in the same indoor scene.
+- Runs that still showed severe wall layering had GUI `FAST-LIVO2 Recorddata` enabled as an additional variable, not only PCD/image saving.
+- NUC log run `20260601_173325` showed healthy SDK delivery and no async save drops: `pcd enqueued/written/dropped/failed=226/226/0/0`, `image=227/227/0/0`.
+- NUC log run `20260601_173624` wrote roughly `2.2G` Odin recorddata, `2.9G` images, and `2.5G` body-frame PCDs, then exited with code `-11`.
+
+Important interpretation:
+
+- GUI `FAST-LIVO2 Recorddata` is a separate heavy write path. Keep it off when isolating PCD/image save impact.
+- `pcd_save.type: 1` writes per-frame body-frame scans under `all_pcd_body`. Directly overlaying those PCD files without applying `lidar_poses.txt` will look layered by design; they are not world-frame fused map files.
+- Next isolation test should use Full LIVO + RViz + PCD/Image save enabled, `FAST-LIVO2 Recorddata` disabled, and a coarser save gate such as translation `1.0` m and rotation `20.0` deg.
+
 ## Follow-Up Considerations
 
 - If final map saving is needed in direct mode, test `final_map_save:=true` separately and inspect the final-map save path before relying on it.
+- Runtime PCD/image saving is asynchronous by default (`pcd_save.async_save_en:=true`, `image_save.async_save_en:=true`) with bounded queues. If disk cannot keep up, old save jobs are dropped so mapping is not blocked.
+- Direct launch exposes async save controls as `pcd_async_save`, `pcd_async_queue_size`, `image_async_save`, and `image_async_queue_size`.
 - If recorddata is enabled, verify disk throughput and output size on NUC because SLAM cloud/odom streams are also activated.
 - If debug ROS topics are enabled with `publish_debug_topics:=true`, DDS load returns for observers, but FAST-LIVO2 still consumes the direct in-process path.
 - The direct SDK wrapper currently converts SDK data into ROS message objects to reuse existing FAST-LIVO2 callbacks. This keeps the change scoped, but a future optimization could pass lighter internal structs if callback overhead becomes measurable.

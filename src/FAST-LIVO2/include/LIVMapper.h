@@ -22,6 +22,9 @@ which is included as part of this source code package.
 #include <tf2_ros/transform_broadcaster.h>
 #include <vikit/pinhole_camera.h>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 
 class LIVMapper : public rclcpp::Node
 {
@@ -52,6 +55,13 @@ public:
   void markPcdSaved(double save_time);
   void markImageSaved(double save_time);
   void saveFinalMap();
+  void startAsyncSaveWorker();
+  void stopAsyncSaveWorker();
+  bool enqueueAsyncPcdRgb(const std::string &path, const PointCloudXYZRGB::Ptr &cloud, const std::string &pose_line);
+  bool enqueueAsyncPcdIntensity(const std::string &path, const PointCloudXYZI::Ptr &cloud, const std::string &pose_line);
+  bool enqueueAsyncImage(const std::string &path, const cv::Mat &image, const std::string &pose_line);
+  void asyncSaveWorker();
+  void writeAsyncSaveStats();
   std::string outputPath(const std::string &relative_path) const;
   void recordInternalTopicSample(TopicDiagStats &stats, double header_stamp);
   void writeInternalTopicReport();
@@ -109,6 +119,8 @@ public:
   bool final_map_save_en = false;
   bool verbose_log_en = false;
   int img_save_interval = 1, pcd_save_interval = -1, pcd_save_type = 0;
+  bool pcd_async_save_en = true, image_async_save_en = true;
+  int pcd_async_queue_size = 8, image_async_queue_size = 8;
   string pcd_save_trigger_mode = "interval", img_save_trigger_mode = "interval";
   double save_pose_translation_m = 0.2, save_pose_rotation_deg = 10.0, save_pose_min_interval_s = 0.0;
   bool last_pcd_save_pose_valid = false, last_image_save_pose_valid = false;
@@ -218,6 +230,31 @@ public:
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   std::unique_ptr<odin_ros_driver::OdinDirectSdk> odin_direct_sdk_;
   std::unique_ptr<vk::AbstractCamera> camera_;
+
+  struct AsyncSaveJob
+  {
+    enum class Type
+    {
+      PcdRgb,
+      PcdIntensity,
+      Image
+    };
+    Type type;
+    std::string path;
+    std::string pose_line;
+    PointCloudXYZRGB::Ptr rgb_cloud;
+    PointCloudXYZI::Ptr intensity_cloud;
+    cv::Mat image;
+  };
+
+  std::mutex async_save_mutex_;
+  std::condition_variable async_save_cv_;
+  std::deque<AsyncSaveJob> async_pcd_jobs_;
+  std::deque<AsyncSaveJob> async_image_jobs_;
+  std::thread async_save_thread_;
+  bool async_save_running_ = false;
+  uint64_t async_pcd_enqueued_ = 0, async_pcd_written_ = 0, async_pcd_dropped_ = 0, async_pcd_failed_ = 0;
+  uint64_t async_image_enqueued_ = 0, async_image_written_ = 0, async_image_dropped_ = 0, async_image_failed_ = 0;
   std::chrono::steady_clock::time_point diag_start_time;
   TopicDiagStats diag_imu, diag_cloud, diag_image;
 

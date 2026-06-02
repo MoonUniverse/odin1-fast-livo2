@@ -24,6 +24,8 @@ def generate_launch_description():
     topic_report_dir = LaunchConfiguration("topic_report_dir")
     pcd_save = LaunchConfiguration("pcd_save")
     final_map_save = LaunchConfiguration("final_map_save")
+    pcd_async_save = LaunchConfiguration("pcd_async_save")
+    pcd_async_queue_size = LaunchConfiguration("pcd_async_queue_size")
     output_run_dir = LaunchConfiguration("output_run_dir")
     save_translation_m = LaunchConfiguration("save_translation_m")
     save_rotation_deg = LaunchConfiguration("save_rotation_deg")
@@ -43,6 +45,8 @@ def generate_launch_description():
         DeclareLaunchArgument("topic_report_dir", default_value="/tmp/fast_livo_lio_topic_reports"),
         DeclareLaunchArgument("pcd_save", default_value="false"),
         DeclareLaunchArgument("final_map_save", default_value="false"),
+        DeclareLaunchArgument("pcd_async_save", default_value="true"),
+        DeclareLaunchArgument("pcd_async_queue_size", default_value="8"),
         DeclareLaunchArgument("output_run_dir", default_value=""),
         DeclareLaunchArgument("save_translation_m", default_value="0.2"),
         DeclareLaunchArgument("save_rotation_deg", default_value="10.0"),
@@ -64,6 +68,8 @@ def generate_launch_description():
                     "common.output_run_dir": output_run_dir,
                     "pcd_save.pcd_save_en": pcd_save,
                     "pcd_save.final_map_save_en": final_map_save,
+                    "pcd_save.async_save_en": pcd_async_save,
+                    "pcd_save.async_queue_size": ParameterValue(pcd_async_queue_size, value_type=int),
                     "image_save.img_save_en": False,
                     "save_pose_gate.translation_m": ParameterValue(save_translation_m, value_type=float),
                     "save_pose_gate.rotation_deg": ParameterValue(save_rotation_deg, value_type=float),

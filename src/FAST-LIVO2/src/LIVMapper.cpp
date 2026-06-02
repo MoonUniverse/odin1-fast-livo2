@@ -123,7 +123,10 @@ LIVMapper::LIVMapper(const rclcpp::NodeOptions &options)
   path.header.frame_id = "camera_init";
 }
 
-LIVMapper::~LIVMapper() {}
+LIVMapper::~LIVMapper()
+{
+  stopAsyncSaveWorker();
+}
 
 void LIVMapper::readParameters()
 {
@@ -194,9 +197,13 @@ void LIVMapper::readParameters()
   readParam(*this, "pcd_save.type", pcd_save_type, 0);
   readParam(*this, "pcd_save.trigger_mode", pcd_save_trigger_mode, std::string("interval"));
   readParam(*this, "pcd_save.final_map_save_en", final_map_save_en, false);
+  readParam(*this, "pcd_save.async_save_en", pcd_async_save_en, true);
+  readParam(*this, "pcd_save.async_queue_size", pcd_async_queue_size, 8);
   readParam(*this, "image_save.img_save_en", img_save_en, false);
   readParam(*this, "image_save.interval", img_save_interval, 1);
   readParam(*this, "image_save.trigger_mode", img_save_trigger_mode, std::string("interval"));
+  readParam(*this, "image_save.async_save_en", image_async_save_en, true);
+  readParam(*this, "image_save.async_queue_size", image_async_queue_size, 8);
   readParam(*this, "save_pose_gate.translation_m", save_pose_translation_m, 0.2);
   readParam(*this, "save_pose_gate.rotation_deg", save_pose_rotation_deg, 10.0);
   readParam(*this, "save_pose_gate.min_interval_s", save_pose_min_interval_s, 0.0);
@@ -216,6 +223,8 @@ void LIVMapper::readParameters()
   readParam(*this, "publish.dense_map_en", dense_map_en, false);
 
   p_pre->blind_sqr = p_pre->blind * p_pre->blind;
+  pcd_async_queue_size = std::max(1, pcd_async_queue_size);
+  image_async_queue_size = std::max(1, image_async_queue_size);
 }
 
 bool LIVMapper::loadCameraFromParameters()
@@ -329,6 +338,10 @@ void LIVMapper::initializeFiles()
   if(img_save_en) fout_visual_pos.open(outputPath("all_image/image_poses.txt"), std::ios::out);
   fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"), std::ios::out);
   fout_out.open(DEBUG_FILE_DIR("mat_out.txt"), std::ios::out);
+  if ((pcd_save_en && pcd_async_save_en) || (img_save_en && image_async_save_en))
+  {
+    startAsyncSaveWorker();
+  }
 }
 
 void LIVMapper::initializeSubscribersAndPublishers()
@@ -781,6 +794,203 @@ void LIVMapper::markImageSaved(double save_time)
   last_image_save_pose_valid = true;
 }
 
+void LIVMapper::startAsyncSaveWorker()
+{
+  std::lock_guard<std::mutex> lock(async_save_mutex_);
+  if (async_save_running_)
+  {
+    return;
+  }
+  async_save_running_ = true;
+  async_save_thread_ = std::thread(&LIVMapper::asyncSaveWorker, this);
+}
+
+void LIVMapper::stopAsyncSaveWorker()
+{
+  {
+    std::lock_guard<std::mutex> lock(async_save_mutex_);
+    if (!async_save_running_ && !async_save_thread_.joinable())
+    {
+      return;
+    }
+    async_save_running_ = false;
+  }
+  async_save_cv_.notify_all();
+  if (async_save_thread_.joinable())
+  {
+    async_save_thread_.join();
+  }
+  writeAsyncSaveStats();
+}
+
+bool LIVMapper::enqueueAsyncPcdRgb(const std::string &path, const PointCloudXYZRGB::Ptr &cloud, const std::string &pose_line)
+{
+  if (!cloud || cloud->empty())
+  {
+    return false;
+  }
+  AsyncSaveJob job;
+  job.type = AsyncSaveJob::Type::PcdRgb;
+  job.path = path;
+  job.pose_line = pose_line;
+  job.rgb_cloud.reset(new PointCloudXYZRGB(*cloud));
+  {
+    std::lock_guard<std::mutex> lock(async_save_mutex_);
+    if (async_pcd_jobs_.size() >= static_cast<size_t>(pcd_async_queue_size))
+    {
+      async_pcd_jobs_.pop_front();
+      async_pcd_dropped_++;
+    }
+    async_pcd_jobs_.push_back(std::move(job));
+    async_pcd_enqueued_++;
+  }
+  async_save_cv_.notify_one();
+  return true;
+}
+
+bool LIVMapper::enqueueAsyncPcdIntensity(const std::string &path, const PointCloudXYZI::Ptr &cloud, const std::string &pose_line)
+{
+  if (!cloud || cloud->empty())
+  {
+    return false;
+  }
+  AsyncSaveJob job;
+  job.type = AsyncSaveJob::Type::PcdIntensity;
+  job.path = path;
+  job.pose_line = pose_line;
+  job.intensity_cloud.reset(new PointCloudXYZI(*cloud));
+  {
+    std::lock_guard<std::mutex> lock(async_save_mutex_);
+    if (async_pcd_jobs_.size() >= static_cast<size_t>(pcd_async_queue_size))
+    {
+      async_pcd_jobs_.pop_front();
+      async_pcd_dropped_++;
+    }
+    async_pcd_jobs_.push_back(std::move(job));
+    async_pcd_enqueued_++;
+  }
+  async_save_cv_.notify_one();
+  return true;
+}
+
+bool LIVMapper::enqueueAsyncImage(const std::string &path, const cv::Mat &image, const std::string &pose_line)
+{
+  if (image.empty())
+  {
+    return false;
+  }
+  AsyncSaveJob job;
+  job.type = AsyncSaveJob::Type::Image;
+  job.path = path;
+  job.pose_line = pose_line;
+  job.image = image.clone();
+  {
+    std::lock_guard<std::mutex> lock(async_save_mutex_);
+    if (async_image_jobs_.size() >= static_cast<size_t>(image_async_queue_size))
+    {
+      async_image_jobs_.pop_front();
+      async_image_dropped_++;
+    }
+    async_image_jobs_.push_back(std::move(job));
+    async_image_enqueued_++;
+  }
+  async_save_cv_.notify_one();
+  return true;
+}
+
+void LIVMapper::asyncSaveWorker()
+{
+  pcl::PCDWriter pcd_writer;
+  while (true)
+  {
+    AsyncSaveJob job;
+    bool has_job = false;
+    {
+      std::unique_lock<std::mutex> lock(async_save_mutex_);
+      async_save_cv_.wait(lock, [&] {
+        return !async_save_running_ || !async_pcd_jobs_.empty() || !async_image_jobs_.empty();
+      });
+      if (async_pcd_jobs_.empty() && async_image_jobs_.empty() && !async_save_running_)
+      {
+        break;
+      }
+      if (!async_pcd_jobs_.empty())
+      {
+        job = std::move(async_pcd_jobs_.front());
+        async_pcd_jobs_.pop_front();
+        has_job = true;
+      }
+      else if (!async_image_jobs_.empty())
+      {
+        job = std::move(async_image_jobs_.front());
+        async_image_jobs_.pop_front();
+        has_job = true;
+      }
+    }
+
+    if (!has_job)
+    {
+      continue;
+    }
+
+    bool ok = false;
+    try
+    {
+      switch (job.type)
+      {
+      case AsyncSaveJob::Type::PcdRgb:
+        ok = job.rgb_cloud && pcd_writer.writeBinary(job.path, *job.rgb_cloud) == 0;
+        break;
+      case AsyncSaveJob::Type::PcdIntensity:
+        ok = job.intensity_cloud && pcd_writer.writeBinary(job.path, *job.intensity_cloud) == 0;
+        break;
+      case AsyncSaveJob::Type::Image:
+        ok = cv::imwrite(job.path, job.image);
+        break;
+      }
+    }
+    catch (const std::exception &e)
+    {
+      RCLCPP_WARN(this->get_logger(), "Async save failed for %s: %s", job.path.c_str(), e.what());
+      ok = false;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(async_save_mutex_);
+      if (job.type == AsyncSaveJob::Type::Image)
+      {
+        ok ? async_image_written_++ : async_image_failed_++;
+        if (ok && fout_visual_pos.is_open() && !job.pose_line.empty())
+        {
+          fout_visual_pos << job.pose_line << std::endl;
+        }
+      }
+      else
+      {
+        ok ? async_pcd_written_++ : async_pcd_failed_++;
+        if (ok && fout_lidar_pos.is_open() && !job.pose_line.empty())
+        {
+          fout_lidar_pos << job.pose_line << std::endl;
+        }
+      }
+    }
+  }
+}
+
+void LIVMapper::writeAsyncSaveStats()
+{
+  std::lock_guard<std::mutex> lock(async_save_mutex_);
+  if (async_pcd_enqueued_ == 0 && async_image_enqueued_ == 0)
+  {
+    return;
+  }
+  RCLCPP_INFO(
+      this->get_logger(),
+      "Async save stats: pcd enqueued/written/dropped/failed=%lu/%lu/%lu/%lu image=%lu/%lu/%lu/%lu",
+      async_pcd_enqueued_, async_pcd_written_, async_pcd_dropped_, async_pcd_failed_,
+      async_image_enqueued_, async_image_written_, async_image_dropped_, async_image_failed_);
+}
+
 void LIVMapper::saveFinalMap()
 {
   if (!final_map_save_en) return;
@@ -962,6 +1172,7 @@ void LIVMapper::run()
     odin_direct_sdk_->stop();
   }
   writeInternalTopicReport();
+  stopAsyncSaveWorker();
   savePCD();
   saveFinalMap();
 }
@@ -1616,6 +1827,14 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
   }
   std::stringstream ss_time;
   ss_time << std::fixed << std::setprecision(6) << update_time;
+  auto make_pose_line = [this](double pose_time) {
+    std::ostringstream pose;
+    Eigen::Quaterniond q(_state.rot_end);
+    pose << std::fixed << std::setprecision(6)
+         << pose_time << " " << _state.pos_end[0] << " " << _state.pos_end[1] << " " << _state.pos_end[2] << " "
+         << q.x() << " " << q.y() << " " << q.z() << " " << q.w();
+    return pose.str();
+  };
 
   if (final_map_save_en)
   {
@@ -1646,17 +1865,26 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
               shouldSaveForPose(last_pcd_save_pose_valid, last_pcd_save_pos, last_pcd_save_rot, last_pcd_save_time, update_time))
           {
             string all_points_dir = outputPath("pcd/" + ss_time.str() + ".pcd");
-            pcl::PCDWriter pcd_writer;
-            cout << "pose-gated scan saved to " << all_points_dir << endl;
-            if (has_rgb_cloud)
+            cout << (pcd_async_save_en ? "pose-gated scan queued to " : "pose-gated scan saved to ") << all_points_dir << endl;
+            if (pcd_async_save_en)
             {
-              pcd_writer.writeBinary(all_points_dir, *laserCloudWorldRGB);
+              pcd_saved = has_rgb_cloud
+                              ? enqueueAsyncPcdRgb(all_points_dir, laserCloudWorldRGB, make_pose_line(update_time))
+                              : enqueueAsyncPcdIntensity(all_points_dir, pcl_w_wait_pub, make_pose_line(update_time));
             }
             else
             {
-              pcd_writer.writeBinary(all_points_dir, *pcl_w_wait_pub);
+              pcl::PCDWriter pcd_writer;
+              if (has_rgb_cloud)
+              {
+                pcd_writer.writeBinary(all_points_dir, *laserCloudWorldRGB);
+              }
+              else
+              {
+                pcd_writer.writeBinary(all_points_dir, *pcl_w_wait_pub);
+              }
+              pcd_saved = true;
             }
-            pcd_saved = true;
           }
         }
         else
@@ -1677,7 +1905,7 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
         if (LidarMeasures.lio_vio_flg == LIO || LidarMeasures.lio_vio_flg == LO)
         {
           int size = feats_undistort->points.size();
-          pcl::PointCloud<pcl::PointXYZI>::Ptr laserCloudBody(new pcl::PointCloud<pcl::PointXYZI>(size, 1));
+          PointCloudXYZI::Ptr laserCloudBody(new PointCloudXYZI(size, 1));
           for (int i = 0; i < size; i++)
           {
             PointType body_point;
@@ -1693,19 +1921,33 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
                 shouldSaveForPose(last_pcd_save_pose_valid, last_pcd_save_pos, last_pcd_save_rot, last_pcd_save_time, update_time))
             {
               string all_points_dir = outputPath("all_pcd_body/" + ss_time.str() + ".pcd");
-              pcl::PCDWriter pcd_writer;
-              cout << "pose-gated body frame scan saved to " << all_points_dir << endl;
-              pcd_writer.writeBinary(all_points_dir, *laserCloudBody);
-              pcd_saved = true;
+              cout << (pcd_async_save_en ? "pose-gated body frame scan queued to " : "pose-gated body frame scan saved to ") << all_points_dir << endl;
+              if (pcd_async_save_en)
+              {
+                pcd_saved = enqueueAsyncPcdIntensity(all_points_dir, laserCloudBody, make_pose_line(update_time));
+              }
+              else
+              {
+                pcl::PCDWriter pcd_writer;
+                pcd_writer.writeBinary(all_points_dir, *laserCloudBody);
+                pcd_saved = true;
+              }
             }
           }
           else
           {
             string all_points_dir = outputPath("all_pcd_body/" + ss_time.str() + ".pcd");
-            pcl::PCDWriter pcd_writer;
-            cout << "body frame scan saved to " << all_points_dir << endl;
-            pcd_writer.writeBinary(all_points_dir, *laserCloudBody);
-            pcd_saved = true;
+            cout << (pcd_async_save_en ? "body frame scan queued to " : "body frame scan saved to ") << all_points_dir << endl;
+            if (pcd_async_save_en)
+            {
+              pcd_saved = enqueueAsyncPcdIntensity(all_points_dir, laserCloudBody, make_pose_line(update_time));
+            }
+            else
+            {
+              pcl::PCDWriter pcd_writer;
+              pcd_writer.writeBinary(all_points_dir, *laserCloudBody);
+              pcd_saved = true;
+            }
           }
         }
         break;
@@ -1724,27 +1966,42 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
 
       pcl::PCDWriter pcd_writer;
 
-      cout << "current scan saved to " << all_points_dir << endl;
+      cout << (pcd_async_save_en ? "current scan queued to " : "current scan saved to ") << all_points_dir << endl;
       if (pcl_wait_save->points.size() > 0)
       {
-        pcd_writer.writeBinary(all_points_dir, *pcl_wait_save); // pcl::io::savePCDFileASCII(all_points_dir, *pcl_wait_save);
+        if (pcd_async_save_en)
+        {
+          pcd_saved = enqueueAsyncPcdRgb(all_points_dir, pcl_wait_save, make_pose_line(update_time)) || pcd_saved;
+        }
+        else
+        {
+          pcd_writer.writeBinary(all_points_dir, *pcl_wait_save); // pcl::io::savePCDFileASCII(all_points_dir, *pcl_wait_save);
+          pcd_saved = true;
+        }
         PointCloudXYZRGB().swap(*pcl_wait_save);
       }
       if(pcl_wait_save_intensity->points.size() > 0)
       {
-        pcd_writer.writeBinary(all_points_dir, *pcl_wait_save_intensity);
+        if (pcd_async_save_en)
+        {
+          pcd_saved = enqueueAsyncPcdIntensity(all_points_dir, pcl_wait_save_intensity, make_pose_line(update_time)) || pcd_saved;
+        }
+        else
+        {
+          pcd_writer.writeBinary(all_points_dir, *pcl_wait_save_intensity);
+          pcd_saved = true;
+        }
         PointCloudXYZI().swap(*pcl_wait_save_intensity);
       }
       scan_wait_num = 0;
-      pcd_saved = true;
     }
     
     if(pcd_saved)
     {
-      Eigen::Quaterniond q(_state.rot_end);
-      fout_lidar_pos << std::fixed << std::setprecision(6);
-      fout_lidar_pos <<  update_time << " " << _state.pos_end[0] << " " << _state.pos_end[1] << " " << _state.pos_end[2] << " " << q.x() << " " << q.y() << " " << q.z()
-          << " " << q.w() << " " << endl;
+      if (!pcd_async_save_en)
+      {
+        fout_lidar_pos << make_pose_line(update_time) << endl;
+      }
       markPcdSaved(update_time);
     }
   }
@@ -1765,14 +2022,25 @@ void LIVMapper::publish_frame_world(const rclcpp::Publisher<sensor_msgs::PointCl
 
     if (save_image)
     {
-      imwrite(outputPath("all_image/" + ss_time.str() + ".png"), vio_manager->img_rgb);
-      
-      Eigen::Quaterniond q(_state.rot_end);
-      fout_visual_pos << std::fixed << std::setprecision(6);
-      fout_visual_pos << LidarMeasures.measures.back().vio_time << " " << _state.pos_end[0] << " " << _state.pos_end[1] << " " << _state.pos_end[2] << " "
-            << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << std::endl;
-      img_wait_num = 0;
-      markImageSaved(update_time);
+      const string image_path = outputPath("all_image/" + ss_time.str() + ".png");
+      bool image_saved = false;
+      if (image_async_save_en)
+      {
+        image_saved = enqueueAsyncImage(image_path, vio_manager->img_rgb, make_pose_line(LidarMeasures.measures.back().vio_time));
+      }
+      else
+      {
+        image_saved = imwrite(image_path, vio_manager->img_rgb);
+        if (image_saved)
+        {
+          fout_visual_pos << make_pose_line(LidarMeasures.measures.back().vio_time) << std::endl;
+        }
+      }
+      if (image_saved)
+      {
+        img_wait_num = 0;
+        markImageSaved(update_time);
+      }
     }
   }
 

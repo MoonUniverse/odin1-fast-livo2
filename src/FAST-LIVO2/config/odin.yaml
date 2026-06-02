@@ -113,10 +113,14 @@ pcd_save:
   interval: -1
   trigger_mode: pose_delta
   final_map_save_en: true
+  async_save_en: true
+  async_queue_size: 8
 image_save:
   img_save_en: false
   interval: 1
   trigger_mode: pose_delta
+  async_save_en: true
+  async_queue_size: 8
 save_pose_gate:
   translation_m: 0.2
   rotation_deg: 10.0
