@@ -141,7 +141,7 @@ Result: passed.
 NUC build command:
 
 ```bash
-ssh nuc13@10.56.238.241 'cd /home/nuc13/livo_workspace && source /opt/ros/humble/setup.bash && colcon build --packages-select odin_ros_driver fast_livo odin_livo_control --cmake-args -DCMAKE_BUILD_TYPE=Release'
+ssh nuc13@10.56.238.242 'cd /home/nuc13/livo_workspace && source /opt/ros/humble/setup.bash && colcon build --packages-select odin_ros_driver fast_livo odin_livo_control --cmake-args -DCMAKE_BUILD_TYPE=Release'
 ```
 
 Result: passed.
@@ -150,14 +150,14 @@ Result: passed.
 
 Target:
 
-- Host: `nuc13@10.56.238.241`
+- Host: `nuc13@10.56.238.242`
 - Workspace: `/home/nuc13/livo_workspace`
 - Odin USB device observed by `lsusb`: `2207:0019 Fuzhou Rockchip Electronics Company hawk`
 
 Final successful hardware run:
 
 ```bash
-ssh nuc13@10.56.238.241 'cd /home/nuc13/livo_workspace && source install/setup.bash && RUN_DIR=/tmp/fast_livo_direct_hw_final_off_$(date +%Y%m%d_%H%M%S) && echo RUN_DIR=${RUN_DIR} && ROS_LOG_DIR=/tmp/ros-log timeout --signal=SIGINT 75 ros2 launch fast_livo mapping_odin_direct.launch.py rviz:=false output_run_dir:=${RUN_DIR} pcd_save:=false final_map_save:=false image_save:=false publish_debug_topics:=false recorddata:=false'
+ssh nuc13@10.56.238.242 'cd /home/nuc13/livo_workspace && source install/setup.bash && RUN_DIR=/tmp/fast_livo_direct_hw_final_off_$(date +%Y%m%d_%H%M%S) && echo RUN_DIR=${RUN_DIR} && ROS_LOG_DIR=/tmp/ros-log timeout --signal=SIGINT 75 ros2 launch fast_livo mapping_odin_direct.launch.py rviz:=false output_run_dir:=${RUN_DIR} pcd_save:=false final_map_save:=false image_save:=false publish_debug_topics:=false recorddata:=false'
 ```
 
 Successful run directory:
@@ -234,9 +234,24 @@ Observed pre-existing NUC differences included:
 Important preserved NUC setting:
 
 - `src/odin_ros_driver/config/control_command_fast_livo.yaml`
-- `cloud_raw_confidence_threshold: 55`
+- `cloud_raw_confidence_threshold: 75`
 
 Do not overwrite this NUC config casually when re-syncing.
+
+When replacing Odin SDK headers/static libraries, rebuild the NUC packages with
+`--cmake-clean-first`. A normal incremental rebuild can leave a stale
+`fastlivo_mapping` link/object product and cause an immediate glibc malloc
+assertion on GUI start.
+
+```bash
+cd /home/nuc13/livo_workspace
+source /opt/ros/humble/setup.bash
+env PATH=/usr/bin:/bin:/opt/ros/humble/bin:/usr/local/bin \
+  colcon build --packages-select odin_ros_driver fast_livo odin_livo_control \
+  --executor sequential \
+  --cmake-clean-first \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=/usr/bin/python3
+```
 
 ## Common Commands
 

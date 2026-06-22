@@ -359,7 +359,7 @@ Shutdown fixes:
 Synchronized target:
 
 ```text
-nuc13@10.56.238.241:/home/nuc13/livo_workspace
+nuc13@10.56.238.242:/home/nuc13/livo_workspace
 ```
 
 Verified on NUC after the latest edits:
@@ -465,7 +465,7 @@ It includes:
 Synchronized target:
 
 ```text
-nuc13@10.56.238.241:/home/nuc13/livo_workspace
+nuc13@10.56.238.242:/home/nuc13/livo_workspace
 ```
 
 NUC build was verified with:
@@ -553,7 +553,7 @@ Result:
 Synchronized instrumentation source files to:
 
 ```text
-nuc13@10.56.238.241:/home/nuc13/livo_workspace
+nuc13@10.56.238.242:/home/nuc13/livo_workspace
 ```
 
 Files synchronized:
@@ -1008,7 +1008,7 @@ FAST-LIVO2 launch updates:
 NUC13 synchronization and verification:
 
 ```text
-nuc13@10.56.238.241:/home/nuc13/livo_workspace
+nuc13@10.56.238.242:/home/nuc13/livo_workspace
 ```
 
 Files synchronized to NUC for this GUI update:
@@ -1271,7 +1271,7 @@ b9b4931 Update Odin IMU calibration parameters
 NUC synchronization target:
 
 ```text
-nuc13@10.56.238.241:/home/nuc13/livo_workspace
+nuc13@10.56.238.242:/home/nuc13/livo_workspace
 ```
 
 Synchronized to NUC:

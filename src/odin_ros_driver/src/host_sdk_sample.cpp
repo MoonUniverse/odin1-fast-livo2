@@ -49,9 +49,9 @@ limitations under the License.
     #include <ros/package.h>
     #include <ros/ros.h> 
 #endif
-#define ros_driver_version "0.10.3"
+#define ros_driver_version "0.11.0"
 #define required_firmware_version_major 0
-#define required_firmware_version_minor 10
+#define required_firmware_version_minor 12
 #define required_firmware_version_patch 0
 
 // Global variable declarations
@@ -60,6 +60,7 @@ static std::atomic<bool> deviceConnected(false);
 static std::atomic<bool> deviceDisconnected(false);  // Device disconnection flag
 static std::mutex device_mutex;                      // Device operation mutex lock
 static std::atomic<bool> g_connection_timeout(false);
+static std::atomic<bool> g_map_transfer_in_progress(false);
 static std::atomic<bool> g_usb_version_error(false);
 static std::atomic<bool> g_shutdown_requested(false);  // Signal handler flag
 #ifdef ROS2
@@ -101,7 +102,7 @@ static std::thread g_imu_thread;
 static std::queue<imu_convert_data_t> g_imu_queue;
 static std::mutex g_imu_queue_mutex;
 static std::condition_variable g_imu_queue_cv;
-static const size_t IMU_QUEUE_MAX_SIZE = 200;
+static const size_t IMU_QUEUE_MAX_SIZE = 8000;
 
 // Cloud (DTOF) dedicated processing thread — avoids blocking lidar_data_callback
 struct cloud_frame_t {
@@ -380,7 +381,7 @@ int g_strict_usb3_0_check = 0;
 int g_use_host_ros_time = 0;
 int g_save_log = 0;
 int g_cloud_raw_confidence_threshold = 35;
-int g_dtof_fps = 145;  // DTOF sensor frame rate: 100 (10fps) or 145 (14.5fps)
+int g_dtof_fps = 145;  // DTOF sensor frame rate: 100 (10fps), 145 (14.5fps), or 290 (29fps RGB + 10fps DTOF)
 
 std::filesystem::path log_root_dir_;
 int g_custom_map_mode = 0;
@@ -553,79 +554,10 @@ static void signal_handler(int signum) {
 
 // Custom parameter monitoring function
 static void custom_parameter_monitor() {
-    int last_save_map_val = -1;
     while (g_param_monitor_running && deviceConnected) {
-        if (odinDevice) {
-            if (g_custom_map_mode == 1) {
-                int value = 0;
-                int result = lidar_get_custom_parameter(odinDevice, "save_map", &value);
-
-                if (result == 0) {
-                    // #ifdef ROS2
-                    //     RCLCPP_INFO(rclcpp::get_logger("param_monitor"), "save_map = %d", value);
-                    // #else
-                    //     ROS_INFO("save_map = %d", value);
-                    // #endif
-
-                    if (last_save_map_val == 1 && value == 0) {
-                        auto now = std::chrono::system_clock::now();
-                        std::time_t t = std::chrono::system_clock::to_time_t(now);
-                        std::tm tm{};
-                        #ifdef _WIN32
-                            localtime_s(&tm, &t);
-                        #else
-                            localtime_r(&t, &tm);
-                        #endif
-                        char map_save_time[32];
-                        std::strftime(map_save_time, sizeof(map_save_time), "%Y%m%d_%H%M%S", &tm);
-
-                        std::string map_dir = g_mapping_result_dest_dir != "" ? g_mapping_result_dest_dir : map_root_dir_.string();
-                        std::string map_name = g_mapping_result_file_name != "" ? g_mapping_result_file_name : "map_" + std::string(map_save_time) + ".bin";
-                        #ifdef ROS2
-                            RCLCPP_INFO(rclcpp::get_logger("param_monitor"), "Map is saved on device, now transfering to [%s/%s]", map_dir.c_str(), map_name.c_str());
-                        #else
-                            ROS_INFO("Map is saved on device, now transfering to [%s/%s]", map_dir.c_str(), map_name.c_str());
-                        #endif
-                        int ret = lidar_get_mapping_result(odinDevice, map_dir.c_str(), map_name.c_str());
-                        if (ret < 0 ) {
-                            #ifdef ROS2
-                                RCLCPP_WARN(rclcpp::get_logger("param_monitor"), "Failed to get mapping result");
-                            #else
-                                ROS_WARN("Failed to get mapping result");
-                            #endif
-                        } else if (ret == 0) {
-                            #ifdef ROS2
-                                RCLCPP_INFO(rclcpp::get_logger("param_monitor"), "map get start success, now transfering...");
-                            #else
-                                ROS_INFO("map get start success, now transfering...");
-                            #endif
-                        } else {
-                            #ifdef ROS2
-                                RCLCPP_WARN(rclcpp::get_logger("param_monitor"), "Failed to get mapping result, error code: %d", ret);
-                            #else
-                                ROS_WARN("Failed to get mapping result, error code: %d", ret);
-                            #endif
-                        }
-                    }
-                    last_save_map_val = value;
-
-                } else if (result == -2) {
-                    #ifdef ROS2
-                        RCLCPP_INFO(rclcpp::get_logger("param_monitor"),"file transfering, try again later...");
-                    #else
-                        ROS_INFO("file transfering, try again later...");
-                    #endif
-                } else {
-                    #ifdef ROS2
-                        RCLCPP_WARN(rclcpp::get_logger("param_monitor"),"Failed to get save_map parameter, error: %d", result);
-                    #else
-                        ROS_WARN("Failed to get save_map parameter, error: %d", result);
-                    #endif
-                }
-            }
-        }
-
-        // Sleep for 1 second (1Hz)
+        // Map transfer is now triggered directly in process_command_file()
+        // when save_map=1 is requested. Keep this thread only as a lifecycle
+        // placeholder for existing startup/shutdown flow.
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 }
@@ -674,6 +606,73 @@ static void process_command_file() {
             
             try {
                 int value = std::stoi(value_str);
+
+                if (param_name == "save_map" && value == 1 && g_map_transfer_in_progress.load()) {
+                    #ifdef ROS2
+                        RCLCPP_WARN(rclcpp::get_logger("command_processor"),
+                                    "Map transfer already in progress, ignoring save_map=1");
+                    #else
+                        ROS_WARN("Map transfer already in progress, ignoring save_map=1");
+                    #endif
+                    return;
+                }
+
+                if (param_name == "save_map" && value == 1) {
+                    auto now = std::chrono::system_clock::now();
+                    std::time_t t = std::chrono::system_clock::to_time_t(now);
+                    std::tm tm{};
+                    #ifdef _WIN32
+                        localtime_s(&tm, &t);
+                    #else
+                        localtime_r(&t, &tm);
+                    #endif
+                    char map_save_time[32];
+                    std::strftime(map_save_time, sizeof(map_save_time), "%Y%m%d_%H%M%S", &tm);
+
+                    std::string map_dir = g_mapping_result_dest_dir != "" ? g_mapping_result_dest_dir : map_root_dir_.string();
+                    if (map_dir.empty()) {
+                        map_dir = (std::filesystem::current_path() / "map" / driver_start_time).string();
+                    }
+                    std::string map_name = g_mapping_result_file_name != "" ? g_mapping_result_file_name : "map_" + std::string(map_save_time) + ".bin";
+                    std::filesystem::create_directories(map_dir);
+
+                    #ifdef ROS2
+                        RCLCPP_INFO(rclcpp::get_logger("command_processor"),
+                                    "Map save triggered, will transfer to [%s/%s]", map_dir.c_str(), map_name.c_str());
+                    #else
+                        ROS_INFO("Map save triggered, will transfer to [%s/%s]", map_dir.c_str(), map_name.c_str());
+                    #endif
+
+                    g_map_transfer_in_progress.store(true);
+                    std::thread([map_dir, map_name]() {
+                        int ret = lidar_save_map(odinDevice, map_dir.c_str(), map_name.c_str(), 0);
+                        g_map_transfer_in_progress.store(false);
+                        if (ret == 0) {
+                            #ifdef ROS2
+                                RCLCPP_INFO(rclcpp::get_logger("map_transfer"),
+                                            "Map transfer completed: %s/%s", map_dir.c_str(), map_name.c_str());
+                            #else
+                                ROS_INFO("Map transfer completed: %s/%s", map_dir.c_str(), map_name.c_str());
+                            #endif
+                        } else if (ret == -2) {
+                            #ifdef ROS2
+                                RCLCPP_WARN(rclcpp::get_logger("map_transfer"),
+                                            "Map transfer skipped: device is busy with another transfer");
+                            #else
+                                ROS_WARN("Map transfer skipped: device is busy with another transfer");
+                            #endif
+                        } else {
+                            #ifdef ROS2
+                                RCLCPP_WARN(rclcpp::get_logger("map_transfer"),
+                                            "Map transfer failed, error code: %d", ret);
+                            #else
+                                ROS_WARN("Map transfer failed, error code: %d", ret);
+                            #endif
+                        }
+                    }).detach();
+                    return;
+                }
+
                 int result = lidar_set_custom_parameter(odinDevice, param_name.c_str(), &value, sizeof(int));
 
                 if (result == 0) {
@@ -1859,7 +1858,7 @@ static void lidar_device_callback(const lidar_device_info_t* device, bool attach
                 RCLCPP_INFO(rclcpp::get_logger(__func__), "Daemon_proc_version: V%d.%d.%d",version.Daemon_proc_version.major,version.Daemon_proc_version.minor,version.Daemon_proc_version.patch);
                 RCLCPP_INFO(rclcpp::get_logger(__func__), "slam_version: V%d.%d.%d",version.slam_version.major,version.slam_version.minor,version.slam_version.patch);
             #else
-                ROS_INFO("ros_driver_version:%s, recommended_firmware_version:%d.%d.%d", ros_driver_version, required_firmware_version_major, required_firmware_version_minor, required_firmware_version_patch);
+                ROS_INFO("ros_driver_version:%s, recommended_min_firmware_version:%d.%d.%d", ros_driver_version, required_firmware_version_major, required_firmware_version_minor, required_firmware_version_patch);
                 ROS_INFO("get version success.");
                 ROS_INFO("kernel_version: V%d.%d.%d",version.kernel_version.major,version.kernel_version.minor,version.kernel_version.patch);
                 ROS_INFO("mcu_version: V%d.%d.%d",version.mcu_version.major,version.mcu_version.minor,version.mcu_version.patch);
@@ -1868,7 +1867,29 @@ static void lidar_device_callback(const lidar_device_info_t* device, bool attach
                 ROS_INFO("slam_version: V%d.%d.%d",version.slam_version.major,version.slam_version.minor,version.slam_version.patch);
             #endif
 
-            if (version.soc_version.major < required_firmware_version_major || (version.soc_version.minor < required_firmware_version_minor) || (version.soc_version.patch < required_firmware_version_patch)) {
+            if (g_record_data && g_ros_object) {
+                std::ostringstream firmware_ss;
+                firmware_ss << version.soc_version.major << "."
+                            << version.soc_version.minor << "."
+                            << version.soc_version.patch;
+                std::ostringstream algorithm_ss;
+                algorithm_ss << version.slam_version.major << "."
+                             << version.slam_version.minor << "."
+                             << version.slam_version.patch;
+                g_ros_object->update_data_logger_info(
+                    reinterpret_cast<const char *>(device->serial),
+                    firmware_ss.str(),
+                    algorithm_ss.str());
+            }
+
+            const bool soc_version_too_low =
+                (version.soc_version.major < required_firmware_version_major) ||
+                (version.soc_version.major == required_firmware_version_major &&
+                    version.soc_version.minor < required_firmware_version_minor) ||
+                (version.soc_version.major == required_firmware_version_major &&
+                    version.soc_version.minor == required_firmware_version_minor &&
+                    version.soc_version.patch < required_firmware_version_patch);
+            if (soc_version_too_low) {
                 #ifdef ROS2
                     RCLCPP_ERROR(rclcpp::get_logger(__func__),"The soc version is too low, please upgrade the device firmware to at least %d.%d.%d\n",required_firmware_version_major,required_firmware_version_minor,required_firmware_version_patch);
                 #else
@@ -2017,12 +2038,14 @@ static void lidar_device_callback(const lidar_device_info_t* device, bool attach
         
 
         // Set DTOF sensor frame rate based on configuration
-        // Supported values: 100 (10fps) or 145 (14.5fps)
+        // Supported values: 100 (10fps), 145 (14.5fps), or 290 (29fps RGB + 10fps DTOF)
         lidar_depth_para_t dtofpara;
         if (g_dtof_fps == 100) {
             dtofpara.odr = LIDAR_DEPTH_ODR_10HZ;
         } else if (g_dtof_fps == 145) {
             dtofpara.odr = LIDAR_DEPTH_ODR_14_5HZ;
+        } else if (g_dtof_fps == 290) {
+            dtofpara.odr = LIDAR_DEPTH_ODR_29HZ;
         } else {
             // Default to 14.5Hz if invalid value
             dtofpara.odr = LIDAR_DEPTH_ODR_14_5HZ;
@@ -2431,7 +2454,7 @@ int main(int argc, char *argv[])
         g_imu_smooth_frequency = get_key_value("imu_smooth_frequency", 400);
         g_cloud_raw_confidence_threshold = get_key_value("cloud_raw_confidence_threshold", 35);
         g_rosNodeControlImpl.setCloudRawConfidenceThreshold(g_cloud_raw_confidence_threshold);
-        g_dtof_fps      = get_key_value("dtof_fps", 145);  // Read DTOF frame rate from config (100=10fps, 145=14.5fps)
+        g_dtof_fps      = get_key_value("dtof_fps", 145);  // 100=10fps, 145=14.5fps, 290=29fps RGB + 10fps DTOF
         g_sendodom      = get_key_value("sendodom", 1);
         g_send_odom_baselink_tf = get_key_value("send_odom_baselink_tf", 0);
         g_sendcloudslam = get_key_value("sendcloudslam", 0);

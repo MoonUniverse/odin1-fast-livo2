@@ -209,7 +209,7 @@ Functional commit:
 Synchronized and built on:
 
 ```text
-nuc13@10.56.238.241:/home/nuc13/livo_workspace
+nuc13@10.56.238.242:/home/nuc13/livo_workspace
 ```
 
 NUC build command:
@@ -230,7 +230,7 @@ The root workspace file `/home/alienware/livo_workspace/ODIN_FAST_LIVO_SYNC_CONT
 contains the full latest handoff. Key points:
 
 - Latest files were synchronized to:
-  - `nuc13@10.56.238.241:/home/nuc13/livo_workspace`
+  - `nuc13@10.56.238.242:/home/nuc13/livo_workspace`
 - FAST-LIVO2 now supports pose-gated PCD/image saving:
   - `pcd_save.trigger_mode: pose_delta`
   - `image_save.trigger_mode: pose_delta`

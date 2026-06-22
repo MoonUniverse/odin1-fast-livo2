@@ -29,6 +29,10 @@ constexpr size_t kOutImuMax = 2000;
 constexpr size_t kOutCloudMax = 30;
 constexpr size_t kOutImageMax = 30;
 constexpr int kDtofRowsPerGroup = 6;
+constexpr const char *kRosDriverVersion = "0.11.0";
+constexpr int kRequiredFirmwareMajor = 0;
+constexpr int kRequiredFirmwareMinor = 12;
+constexpr int kRequiredFirmwarePatch = 0;
 
 std::mutex g_active_mutex;
 OdinDirectSdk *g_active = nullptr;
@@ -70,6 +74,26 @@ std::string formatDouble(double value)
   std::ostringstream ss;
   ss << std::fixed << std::setprecision(6) << value;
   return ss.str();
+}
+
+std::string firmwareVersionString(const lidar_version_t &version)
+{
+  std::ostringstream ss;
+  ss << version.major << "." << version.minor << "." << version.patch;
+  return ss.str();
+}
+
+bool firmwareAtLeast(const lidar_version_t &version, int major, int minor, int patch)
+{
+  if (version.major != major)
+  {
+    return version.major > major;
+  }
+  if (version.minor != minor)
+  {
+    return version.minor > minor;
+  }
+  return version.patch >= patch;
 }
 
 } // namespace
@@ -584,10 +608,30 @@ bool OdinDirectSdk::configureDevice(const lidar_device_info_t *device)
   {
     RCLCPP_INFO(
         node_->get_logger(),
-        "Odin direct SDK firmware kernel=%d.%d.%d soc=%d.%d.%d slam=%d.%d.%d",
+        "Odin direct SDK driver=%s minimum_firmware=%d.%d.%d firmware kernel=%d.%d.%d soc=%d.%d.%d slam=%d.%d.%d",
+        kRosDriverVersion, kRequiredFirmwareMajor, kRequiredFirmwareMinor, kRequiredFirmwarePatch,
         version.kernel_version.major, version.kernel_version.minor, version.kernel_version.patch,
         version.soc_version.major, version.soc_version.minor, version.soc_version.patch,
         version.slam_version.major, version.slam_version.minor, version.slam_version.patch);
+    if (!firmwareAtLeast(version.soc_version, kRequiredFirmwareMajor, kRequiredFirmwareMinor, kRequiredFirmwarePatch))
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Odin direct SDK requires firmware >= %d.%d.%d, got SoC firmware %d.%d.%d",
+          kRequiredFirmwareMajor, kRequiredFirmwareMinor, kRequiredFirmwarePatch,
+          version.soc_version.major, version.soc_version.minor, version.soc_version.patch);
+      lidar_close_device(device_);
+      lidar_destory_device(device_);
+      device_ = nullptr;
+      return false;
+    }
+    if (data_logger_)
+    {
+      data_logger_->update_info_file(
+          reinterpret_cast<const char *>(device->serial),
+          firmwareVersionString(version.soc_version),
+          firmwareVersionString(version.slam_version));
+    }
   }
 
   std::filesystem::path config_dir = std::filesystem::path(options_.config_file).parent_path();
@@ -613,7 +657,18 @@ bool OdinDirectSdk::configureDevice(const lidar_device_info_t *device)
   }
 
   lidar_depth_para_t dtof_param{};
-  dtof_param.odr = dtof_fps_ == 100 ? LIDAR_DEPTH_ODR_10HZ : LIDAR_DEPTH_ODR_14_5HZ;
+  if (dtof_fps_ == 290)
+  {
+    dtof_param.odr = LIDAR_DEPTH_ODR_29HZ;
+  }
+  else if (dtof_fps_ == 145)
+  {
+    dtof_param.odr = LIDAR_DEPTH_ODR_14_5HZ;
+  }
+  else
+  {
+    dtof_param.odr = LIDAR_DEPTH_ODR_10HZ;
+  }
   if (lidar_set_depth_parameter(device_, &dtof_param) != 0)
   {
     RCLCPP_WARN(node_->get_logger(), "Odin direct SDK: lidar_set_depth_parameter failed");
@@ -852,7 +907,7 @@ void OdinDirectSdk::recordSlamCloud(const capture_Image_List_t &stream, int idx)
     return;
   }
   const auto &buf = stream.imageList[idx];
-  const size_t point_size = sizeof(int32_t) * 7;
+  const size_t point_size = sizeof(slam_cloud_point_t);
   const uint32_t points = static_cast<uint32_t>(buf.length / point_size);
   if (points == 0)
   {
@@ -861,7 +916,7 @@ void OdinDirectSdk::recordSlamCloud(const capture_Image_List_t &stream, int idx)
 
   const double ts = static_cast<double>(stream.imageList[0].timestamp) / 1e9;
   const uint32_t cloud_idx = record_cloud_index_.fetch_add(1, std::memory_order_relaxed);
-  const auto *xyz_data = static_cast<const int32_t *>(buf.pAddr);
+  const auto *xyz_data = static_cast<const slam_cloud_point_t *>(buf.pAddr);
 
   std::vector<uint8_t> blob;
   blob.reserve(sizeof(uint32_t) + sizeof(double) + sizeof(uint32_t) + static_cast<size_t>(points) * (sizeof(float) * 3 + sizeof(uint8_t) * 4));
@@ -870,14 +925,14 @@ void OdinDirectSdk::recordSlamCloud(const capture_Image_List_t &stream, int idx)
   appendPod(blob, points);
   for (uint32_t i = 0; i < points; ++i)
   {
-    const int32_t *ptr = xyz_data + 7 * i;
-    const float x = static_cast<float>(ptr[0]) / 10000.0f;
-    const float y = static_cast<float>(ptr[1]) / 10000.0f;
-    const float z = static_cast<float>(ptr[2]) / 10000.0f;
-    const uint8_t r = static_cast<uint8_t>(ptr[3] & 0xff);
-    const uint8_t g = static_cast<uint8_t>(ptr[4] & 0xff);
-    const uint8_t b = static_cast<uint8_t>(ptr[5] & 0xff);
-    const uint8_t a = static_cast<uint8_t>(ptr[6] & 0xff);
+    const slam_cloud_point_t *ptr = xyz_data + i;
+    const float x = static_cast<float>(ptr->xyz[0]) * SLAM_CLOUD_XYZ_TO_M;
+    const float y = static_cast<float>(ptr->xyz[1]) * SLAM_CLOUD_XYZ_TO_M;
+    const float z = static_cast<float>(ptr->xyz[2]) * SLAM_CLOUD_XYZ_TO_M;
+    const uint8_t r = static_cast<uint8_t>(ptr->rgba[0] & 0xff);
+    const uint8_t g = static_cast<uint8_t>(ptr->rgba[1] & 0xff);
+    const uint8_t b = static_cast<uint8_t>(ptr->rgba[2] & 0xff);
+    const uint8_t a = static_cast<uint8_t>(ptr->rgba[3] & 0xff);
     appendPod(blob, x);
     appendPod(blob, y);
     appendPod(blob, z);

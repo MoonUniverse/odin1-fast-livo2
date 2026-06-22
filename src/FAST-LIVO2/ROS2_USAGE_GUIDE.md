@@ -343,7 +343,7 @@ that axis from the mean instead of averaging in zero.
 The latest synchronized NUC workspace is:
 
 ```text
-nuc13@10.56.238.241:/home/nuc13/livo_workspace
+nuc13@10.56.238.242:/home/nuc13/livo_workspace
 ```
 
 Functional commit:

@@ -26,7 +26,17 @@ limitations under the License.
 #include <iomanip>
 #include <cstring>
 #include <opencv2/opencv.hpp>
-#include <cv_bridge/cv_bridge.h>
+// ROS2 Humble+ provides cv_bridge.hpp; Jazzy removes the legacy .h.
+// Prefer .hpp when available, fall back to .h for older ROS distros.
+#if defined(__has_include)
+#  if __has_include(<cv_bridge/cv_bridge.hpp>)
+#    include <cv_bridge/cv_bridge.hpp>
+#  else
+#    include <cv_bridge/cv_bridge.h>
+#  endif
+#else
+#  include <cv_bridge/cv_bridge.h>
+#endif
 #include <thread>
 #include <Eigen/Dense>
 #include <atomic>
@@ -192,6 +202,24 @@ inline uint64_t ros_time_to_ns(const ros::Time &t) {
     #endif
 }
 
+// Compute an aligned nanosecond timestamp for offline recorddata files.
+// This mirrors make_aligned_stamp() so recorded timestamps match ROS publishes.
+inline uint64_t aligned_stamp_ns(uint64_t sensor_timestamp_ns) {
+    if (g_use_host_ros_time == 1) {
+        const auto now = std::chrono::system_clock::now().time_since_epoch();
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+    }
+    if (g_use_host_ros_time == 2) {
+        const double offset_s = get_ptp_smoothed_offset();
+        const int64_t offset_ns = static_cast<int64_t>(offset_s * 1e9);
+        const int64_t base_ns = static_cast<int64_t>(sensor_timestamp_ns);
+        const int64_t aligned_ns = base_ns - offset_ns;
+        return (aligned_ns < 0) ? 0ULL : static_cast<uint64_t>(aligned_ns);
+    }
+    return sensor_timestamp_ns;
+}
+
 inline ros::Time make_aligned_stamp(uint64_t sensor_timestamp_ns
 #ifdef ROS2
                                     , const rclcpp::Node::SharedPtr& node
@@ -260,6 +288,13 @@ public:
     void set_data_logger(std::shared_ptr<BinaryDataLogger> logger) {
         data_logger_ = std::move(logger);
     }
+    void update_data_logger_info(const std::string& device_id,
+                                 const std::string& firmware_version,
+                                 const std::string& algorithm_version) {
+        if (data_logger_) {
+            data_logger_->update_info_file(device_id, firmware_version, algorithm_version);
+        }
+    }
 
     int get_pose_index() {
         return pose_index_.load();
@@ -312,7 +347,7 @@ public:
         #endif
 
         if(data_logger_) {
-            const double ts_sec = static_cast<double>(stream->stamp) / 1e9;
+            const double ts_sec = static_cast<double>(aligned_stamp_ns(stream->stamp)) / 1e9;
             float ax = imu_msg.linear_acceleration.x;
             float ay = imu_msg.linear_acceleration.y;
             float az = imu_msg.linear_acceleration.z;
@@ -812,7 +847,7 @@ void publishRgb(capture_Image_List_t *stream) {
         // Enqueue binary logging for image
         if (data_logger_) {
             const uint32_t idx_now = image_index_.fetch_add(1, std::memory_order_relaxed);
-            const double ts_sec = static_cast<double>(stream->imageList[0].timestamp) / 1e9;
+            const double ts_sec = static_cast<double>(aligned_stamp_ns(stream->imageList[0].timestamp)) / 1e9;
             const uint32_t jpeg_size = static_cast<uint32_t>(jpeg_data.size());
             std::vector<uint8_t> blob;
             blob.reserve(sizeof(uint32_t) + sizeof(double) + sizeof(uint32_t) + jpeg_size);
@@ -893,7 +928,7 @@ void publishRgb(capture_Image_List_t *stream) {
 
                 //RCLCPP_INFO(rclcpp::get_logger("device_cb"), "Point cloudrgba %ld",stream->imageList[0].timestamp);
 
-                size_t pt_size = sizeof(int32_t) * 3 + sizeof(int32_t) * 4;
+                size_t pt_size = sizeof(slam_cloud_point_t);
                 uint32_t points = stream->imageList[idx].length / pt_size;
 
                 msg.height = 1;
@@ -919,7 +954,7 @@ void publishRgb(capture_Image_List_t *stream) {
             msg.header.frame_id = "odom";
             msg.header.stamp = make_aligned_stamp(stream->imageList[0].timestamp);
             
-            size_t pt_size = sizeof(int32_t) * 3 + sizeof(int32_t) * 4;
+            size_t pt_size = sizeof(slam_cloud_point_t);
             uint32_t points = stream->imageList[idx].length / pt_size;
             
             msg.height = 1;
@@ -943,25 +978,24 @@ void publishRgb(capture_Image_List_t *stream) {
         #endif
         
         // Shared data processing logic
-        int32_t* xyz_data = static_cast<int32_t*>(stream->imageList[idx].pAddr);
+        auto* xyz_data = static_cast<slam_cloud_point_t*>(stream->imageList[idx].pAddr);
         
         for(uint32_t i = 0; i < points; i++) {
-            int32_t* ptr = xyz_data + 7*i;
+            slam_cloud_point_t* ptr = xyz_data + i;
             
 #ifdef ROS2
-                *iter_x = static_cast<float>(ptr[0]) / 10000.0f; ++iter_x;
-                *iter_y = static_cast<float>(ptr[1]) / 10000.0f; ++iter_y;
-                *iter_z = static_cast<float>(ptr[2]) / 10000.0f; ++iter_z;
+                *iter_x = static_cast<float>(ptr->xyz[0]) * SLAM_CLOUD_XYZ_TO_M; ++iter_x;
+                *iter_y = static_cast<float>(ptr->xyz[1]) * SLAM_CLOUD_XYZ_TO_M; ++iter_y;
+                *iter_z = static_cast<float>(ptr->xyz[2]) * SLAM_CLOUD_XYZ_TO_M; ++iter_z;
 #else
-                *iter_x = (1.0 * ptr[0]) / 1e4; ++iter_x;
-                *iter_y = (1.0 * ptr[1]) / 1e4; ++iter_y;
-                *iter_z = (1.0 * ptr[2]) / 1e4; ++iter_z;
+                *iter_x = static_cast<float>(ptr->xyz[0]) * SLAM_CLOUD_XYZ_TO_M; ++iter_x;
+                *iter_y = static_cast<float>(ptr->xyz[1]) * SLAM_CLOUD_XYZ_TO_M; ++iter_y;
+                *iter_z = static_cast<float>(ptr->xyz[2]) * SLAM_CLOUD_XYZ_TO_M; ++iter_z;
 #endif
             
-            uint8_t r = ptr[3] & 0xff;
-            uint8_t g = ptr[4] & 0xff;
-            uint8_t b = ptr[5] & 0xff;  
-            uint8_t a = ptr[6] & 0xff;
+            uint8_t r = ptr->rgba[0] & 0xff;
+            uint8_t g = ptr->rgba[1] & 0xff;
+            uint8_t b = ptr->rgba[2] & 0xff;
             
             uint32_t packed_rgb = (static_cast<uint32_t>(r) << 16) | 
                                 (static_cast<uint32_t>(g) << 8)  | 
@@ -975,7 +1009,7 @@ void publishRgb(capture_Image_List_t *stream) {
 
         // Enqueue binary logging for point cloud (XYZRGB per point)
         if (data_logger_ && points > 0) {
-            const double ts_sec = static_cast<double>(stream->imageList[0].timestamp) / 1e9;
+            const double ts_sec = static_cast<double>(aligned_stamp_ns(stream->imageList[0].timestamp)) / 1e9;
             const uint32_t idx_now = cloud_index_.fetch_add(1, std::memory_order_relaxed);
             // Compute total blob size: header + per-point payload
             const size_t header_size = sizeof(uint32_t) + sizeof(double) + sizeof(uint32_t);
@@ -991,14 +1025,14 @@ void publishRgb(capture_Image_List_t *stream) {
             append_pod(points);
 
             for (uint32_t i = 0; i < points; ++i) {
-                int32_t* ptr = xyz_data + 7 * i;
-                float fx = static_cast<float>(ptr[0]) / 10000.0f;
-                float fy = static_cast<float>(ptr[1]) / 10000.0f;
-                float fz = static_cast<float>(ptr[2]) / 10000.0f;
-                uint8_t r = static_cast<uint8_t>(ptr[3] & 0xff);
-                uint8_t g = static_cast<uint8_t>(ptr[4] & 0xff);
-                uint8_t b = static_cast<uint8_t>(ptr[5] & 0xff);
-                uint8_t a = static_cast<uint8_t>(ptr[6] & 0xff);
+                slam_cloud_point_t* ptr = xyz_data + i;
+                float fx = static_cast<float>(ptr->xyz[0]) * SLAM_CLOUD_XYZ_TO_M;
+                float fy = static_cast<float>(ptr->xyz[1]) * SLAM_CLOUD_XYZ_TO_M;
+                float fz = static_cast<float>(ptr->xyz[2]) * SLAM_CLOUD_XYZ_TO_M;
+                uint8_t r = static_cast<uint8_t>(ptr->rgba[0] & 0xff);
+                uint8_t g = static_cast<uint8_t>(ptr->rgba[1] & 0xff);
+                uint8_t b = static_cast<uint8_t>(ptr->rgba[2] & 0xff);
+                uint8_t a = static_cast<uint8_t>(ptr->rgba[3] & 0xff);
                 append_pod(fx);
                 append_pod(fy);
                 append_pod(fz);
@@ -1023,7 +1057,7 @@ void publishRgb(capture_Image_List_t *stream) {
             if (data_len == sizeof(ros_odom_convert_complete_t)) {
                 ros_odom_convert_complete_t* odom_data = (ros_odom_convert_complete_t*)stream->imageList[0].pAddr;
                 const uint32_t idx_now = wcwi_index_.fetch_add(1, std::memory_order_relaxed);
-                const double ts_sec = static_cast<double>(odom_data->timestamp_ns) / 1e9;
+                const double ts_sec = static_cast<double>(aligned_stamp_ns(odom_data->timestamp_ns)) / 1e9;
                 float pose_arr[4];
                 pose_arr[0] = static_cast<float>((odom_data->orient[0]) / 1e6);
                 pose_arr[1] = static_cast<float>((odom_data->orient[1]) / 1e6);
@@ -1239,7 +1273,7 @@ void publishRgb(capture_Image_List_t *stream) {
                 // Enqueue binary logging for pose
                 if ((odom_type == OdometryType::STANDARD) && data_logger_) {
                     const uint32_t idx_now = pose_index_.fetch_add(1, std::memory_order_relaxed);
-                    const double ts_sec = static_cast<double>(odom_data->timestamp_ns) / 1e9;
+                    const double ts_sec = static_cast<double>(aligned_stamp_ns(odom_data->timestamp_ns)) / 1e9;
                     float pose_arr[7];
                     pose_arr[0] = static_cast<float>(msg.pose.pose.position.x);
                     pose_arr[1] = static_cast<float>(msg.pose.pose.position.y);

@@ -307,7 +307,7 @@ Current Odin/FAST-LIVO2 functional commit:
 It was synchronized to:
 
 ```text
-nuc13@10.56.238.241:/home/nuc13/livo_workspace
+nuc13@10.56.238.242:/home/nuc13/livo_workspace
 ```
 
 The NUC build was verified with:
